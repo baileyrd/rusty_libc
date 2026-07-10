@@ -31,6 +31,7 @@ pub mod arch;
 pub mod fd;
 pub mod process;
 pub mod rlimit;
+pub mod signal;
 pub mod termios;
 pub mod tty;
 pub mod umask;
