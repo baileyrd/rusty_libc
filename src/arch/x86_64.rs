@@ -13,6 +13,8 @@ pub mod nr {
     pub const READ: usize = 0;
     pub const CLOSE: usize = 3;
     pub const POLL: usize = 7;
+    pub const RT_SIGACTION: usize = 13;
+    pub const RT_SIGRETURN: usize = 15;
     pub const IOCTL: usize = 16;
     pub const DUP: usize = 32;
     pub const DUP2: usize = 33;
