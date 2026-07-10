@@ -10,12 +10,17 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
-  # Phase 1 targets x86_64 only; the crate emits a compile_error! on other
-  # arches. Phase 5 adds the aarch64 syscall table and an emulated runner, and
-  # expands this into a build+test matrix.
   test:
-    name: test (x86_64-unknown-linux-gnu)
+    name: test (${{ matrix.target }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            # aarch64 is cross-compiled and its tests run under qemu-user.
+            cross: true
     steps:
       - uses: actions/checkout@v4
 
@@ -23,15 +28,26 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup component add rustfmt clippy
+          rustup target add ${{ matrix.target }}
+
+      - name: Install aarch64 cross toolchain + qemu
+        if: matrix.cross
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu qemu-user
+
+      - name: Configure aarch64 linker + qemu runner
+        if: matrix.cross
+        run: |
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUNNER=qemu-aarch64 -L /usr/aarch64-linux-gnu" >> "$GITHUB_ENV"
 
       - name: Format
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --target ${{ matrix.target }} --all-targets -- -D warnings
 
       - name: Build (no_std)
-        run: cargo build
+        run: cargo build --target ${{ matrix.target }}
 
       - name: Test
-        run: cargo test
+        run: cargo test --target ${{ matrix.target }}

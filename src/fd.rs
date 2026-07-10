@@ -3,6 +3,8 @@
 //! and [`crate::tty`].
 
 use crate::arch::nr;
+#[cfg(target_arch = "aarch64")]
+use crate::arch::syscall5;
 use crate::arch::{from_ret, from_ret_i32, syscall1, syscall2, syscall3, Errno};
 
 /// `poll(2)` event/return flag: data available to read.
@@ -43,6 +45,11 @@ pub fn read(fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
 
 /// Wait for events on `fds`, up to `timeout` milliseconds (negative blocks
 /// indefinitely). Returns the number of fds with non-zero `revents`.
+///
+/// x86_64 uses `poll`; aarch64 has no `poll` syscall, so this issues `ppoll`
+/// with an equivalent `timespec` and a null signal mask. The behaviour and
+/// signature are identical across arches.
+#[cfg(target_arch = "x86_64")]
 pub fn poll(fds: &mut [PollFd], timeout: i32) -> Result<usize, Errno> {
     // SAFETY: `fds` is a valid, exclusively-borrowed slice of `fds.len()`
     // `PollFd` entries; the kernel only writes each `revents` field.
@@ -54,6 +61,35 @@ pub fn poll(fds: &mut [PollFd], timeout: i32) -> Result<usize, Errno> {
             timeout as usize,
         )
     };
+    from_ret(ret)
+}
+
+/// aarch64 `ppoll`-backed [`poll`]; see the x86_64 variant for docs.
+#[cfg(target_arch = "aarch64")]
+pub fn poll(fds: &mut [PollFd], timeout: i32) -> Result<usize, Errno> {
+    #[repr(C)]
+    struct Timespec {
+        tv_sec: i64,
+        tv_nsec: i64,
+    }
+    // Negative timeout → null timespec (block indefinitely), matching poll.
+    let ts = if timeout < 0 {
+        None
+    } else {
+        Some(Timespec {
+            tv_sec: (timeout / 1000) as i64,
+            tv_nsec: (timeout % 1000) as i64 * 1_000_000,
+        })
+    };
+    let tsp = match &ts {
+        Some(t) => t as *const Timespec as usize,
+        None => 0,
+    };
+    // ppoll(fds, nfds, tmo, sigmask = NULL, sigsetsize = 8). The kernel
+    // ignores sigsetsize when sigmask is null, but pass the canonical 8.
+    // SAFETY: `fds` is valid and exclusively borrowed; `tsp` is either null or
+    // a valid `*const timespec`; the signal mask is null.
+    let ret = unsafe { syscall5(nr::PPOLL, fds.as_mut_ptr() as usize, fds.len(), tsp, 0, 8) };
     from_ret(ret)
 }
 
@@ -76,9 +112,29 @@ pub fn dup(fd: i32) -> Result<i32, Errno> {
 
 /// Duplicate `oldfd` onto `newfd`, closing `newfd` first if open. Returns
 /// `newfd`.
+///
+/// aarch64 has no `dup2`; this emulates it with `dup3`. The one behavioural
+/// gap dup3 has is `oldfd == newfd`: dup2 returns `newfd` unchanged when
+/// `oldfd` is valid, whereas dup3 rejects it with `EINVAL`. We special-case
+/// that to preserve dup2 semantics (validating `oldfd` via `fcntl`).
+#[cfg(target_arch = "x86_64")]
 pub fn dup2(oldfd: i32, newfd: i32) -> Result<i32, Errno> {
     // SAFETY: plain integer arguments.
     let ret = unsafe { syscall2(nr::DUP2, oldfd as usize, newfd as usize) };
+    from_ret_i32(ret)
+}
+
+/// aarch64 `dup3`-backed [`dup2`]; see the x86_64 variant for docs.
+#[cfg(target_arch = "aarch64")]
+pub fn dup2(oldfd: i32, newfd: i32) -> Result<i32, Errno> {
+    if oldfd == newfd {
+        // dup2 returns newfd if oldfd is valid, else EBADF. fcntl(F_GETFD)
+        // validates oldfd with exactly that error.
+        fcntl(oldfd, F_GETFD, 0)?;
+        return Ok(newfd);
+    }
+    // SAFETY: plain integer arguments; flags = 0.
+    let ret = unsafe { syscall3(nr::DUP3, oldfd as usize, newfd as usize, 0) };
     from_ret_i32(ret)
 }
 

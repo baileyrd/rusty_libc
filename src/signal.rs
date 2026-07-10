@@ -98,7 +98,9 @@ pub const SIGSYS: i32 = 31;
 
 /// `sa_flags`: resume slow syscalls instead of failing with `EINTR`.
 const SA_RESTART: u64 = 0x1000_0000;
-/// `sa_flags`: `sa_restorer` is valid and should be used (x86_64 requires it).
+/// `sa_flags`: `sa_restorer` is valid and should be used (x86_64 requires it;
+/// aarch64 has no restorer and never sets this).
+#[cfg(target_arch = "x86_64")]
 const SA_RESTORER: u64 = 0x0400_0000;
 
 /// Size in bytes of the kernel `sigset_t` we pass to `rt_sigaction`. The
@@ -126,7 +128,8 @@ const _: () = assert!(core::mem::offset_of!(KernelSigaction, sa_mask) == 24);
 /// The x86_64 signal-return trampoline: `sa_restorer` points here so that,
 /// when a handler returns, this code issues `SYS_rt_sigreturn` to restore the
 /// pre-signal context. Naked and never inlined so its address is a stable,
-/// valid entry point.
+/// valid entry point. aarch64 needs no equivalent (kernel vDSO handles it).
+#[cfg(target_arch = "x86_64")]
 #[unsafe(naked)]
 unsafe extern "C" fn sigreturn_trampoline() {
     core::arch::naked_asm!(
@@ -148,10 +151,20 @@ unsafe extern "C" fn sigreturn_trampoline() {
 /// are permitted, and `handler` (when not a sentinel) must be a valid
 /// `extern "C" fn(i32)` pointer that lives at least until it is replaced.
 pub unsafe fn signal(sig: i32, handler: Sighandler) -> Result<Sighandler, Errno> {
+    // x86_64 must supply a restorer via SA_RESTORER; aarch64's kernel provides
+    // one through the vDSO, so it sets neither the flag nor sa_restorer.
+    #[cfg(target_arch = "x86_64")]
+    let (sa_flags, sa_restorer) = (
+        SA_RESTART | SA_RESTORER,
+        sigreturn_trampoline as *const () as usize,
+    );
+    #[cfg(target_arch = "aarch64")]
+    let (sa_flags, sa_restorer) = (SA_RESTART, 0usize);
+
     let new = KernelSigaction {
         sa_handler: handler,
-        sa_flags: SA_RESTART | SA_RESTORER,
-        sa_restorer: sigreturn_trampoline as *const () as usize,
+        sa_flags,
+        sa_restorer,
         sa_mask: 0,
     };
     let mut old = KernelSigaction {
@@ -182,16 +195,27 @@ mod tests {
     use crate::arch::{syscall0, syscall3};
     use core::sync::atomic::{AtomicU64, Ordering};
 
+    // gettid/tgkill numbers differ per arch and aren't part of the crate's
+    // public surface, so define them locally for the tests.
+    #[cfg(target_arch = "x86_64")]
+    const NR_GETTID: usize = 186;
+    #[cfg(target_arch = "x86_64")]
+    const NR_TGKILL: usize = 234;
+    #[cfg(target_arch = "aarch64")]
+    const NR_GETTID: usize = 178;
+    #[cfg(target_arch = "aarch64")]
+    const NR_TGKILL: usize = 131;
+
     // Direct the signal at the *current thread* so delivery is synchronous
     // (it completes before the raising syscall returns), giving exact counts
     // regardless of what the rest of the test harness's threads are doing.
     fn gettid() -> i32 {
         // SAFETY: gettid takes no args and never fails.
-        unsafe { syscall0(186) as i32 }
+        unsafe { syscall0(NR_GETTID) as i32 }
     }
     fn tgkill(tgid: i32, tid: i32, sig: i32) {
         // SAFETY: plain integer arguments.
-        unsafe { syscall3(234, tgid as usize, tid as usize, sig as usize) };
+        unsafe { syscall3(NR_TGKILL, tgid as usize, tid as usize, sig as usize) };
     }
 
     static COUNT: AtomicU64 = AtomicU64::new(0);

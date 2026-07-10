@@ -7,10 +7,15 @@ mod x86_64;
 #[cfg(target_arch = "x86_64")]
 pub use x86_64::*;
 
-#[cfg(not(target_arch = "x86_64"))]
+#[cfg(target_arch = "aarch64")]
+mod aarch64;
+#[cfg(target_arch = "aarch64")]
+pub use aarch64::*;
+
+#[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
 compile_error!(
-    "rusty_libc currently supports only x86_64; aarch64 lands in Phase 5 \
-     (see DESIGN.md). Keep using the `libc` crate on other targets."
+    "rusty_libc supports x86_64 and aarch64 only (see DESIGN.md). Keep using \
+     the `libc` crate on other targets."
 );
 
 /// A positive `errno` value returned by a failing syscall.
