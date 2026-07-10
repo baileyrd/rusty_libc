@@ -20,12 +20,16 @@ pub mod nr {
     pub const DUP3: usize = 24;
     pub const FCNTL: usize = 25;
     pub const IOCTL: usize = 29;
+    pub const LSEEK: usize = 62;
+    pub const WRITE: usize = 64;
     pub const CLOSE: usize = 57;
     pub const PIPE2: usize = 59;
     pub const READ: usize = 63;
     pub const PPOLL: usize = 73;
     pub const EXIT_GROUP: usize = 94;
     pub const KILL: usize = 129;
+    pub const MEMFD_CREATE: usize = 279;
+    pub const CLONE: usize = 220;
     pub const RT_SIGACTION: usize = 134;
     pub const SETPGID: usize = 154;
     pub const UMASK: usize = 166;
