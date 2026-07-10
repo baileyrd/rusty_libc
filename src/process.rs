@@ -1,11 +1,8 @@
-//! Process identity, process groups, signalling, and exit.
-//!
-//! `fork` is intentionally absent: per `DESIGN.md`, rush's forked children keep
-//! running Rust on an inherited glibc heap, so `fork` stays on glibc until a
-//! thread-quiescence plan exists (Phase 4).
+//! Process identity, process groups, signalling, and exit, plus the raw
+//! [`fork`] primitive (Phase 4).
 
 use crate::arch::nr;
-use crate::arch::{from_ret, syscall0, syscall1, syscall2, Errno};
+use crate::arch::{from_ret, from_ret_i32, syscall0, syscall1, syscall2, syscall5, Errno};
 
 /// Get the calling process's ID. Cannot fail.
 #[inline]
@@ -59,6 +56,38 @@ pub fn exit_group(status: i32) -> ! {
     }
 }
 
+/// `SIGCHLD`: sent to the parent on child termination. Passed to `clone` as the
+/// low byte of the flags so a plain wait reaps the child, matching `fork`.
+const SIGCHLD: usize = 17;
+
+/// Create a child process, returning the child's pid to the parent and `0` to
+/// the child. Backed by `clone(SIGCHLD, stack = NULL, …)` — a null stack gives
+/// the child a copy-on-write clone of the parent's stack, i.e. `fork`
+/// semantics.
+///
+/// # Safety
+///
+/// This is a **raw** fork. Unlike glibc's `fork()`, it does **not** reset
+/// glibc's internal malloc/stdio locks in the child, run `pthread_atfork`
+/// handlers, or otherwise make a multithreaded parent safe. If any *other*
+/// thread in the parent holds a lock (e.g. the malloc arena) at the instant of
+/// the call, the child inherits it locked and deadlocks the first time it needs
+/// it — and a Rust child that keeps running (rather than going straight to
+/// `exec`/[`exit_group`]) will need the allocator almost immediately.
+///
+/// Only call this when the process is effectively single-threaded at the fork
+/// point (no other thread can be mid-allocation), or when the child touches
+/// nothing but async-signal-safe syscalls before `exec`/[`exit_group`]. See
+/// rush's `LIBC_DEPENDENCY_ANALYSIS.md` §4.2.
+pub unsafe fn fork() -> Result<i32, Errno> {
+    // clone(flags = SIGCHLD, stack = 0, parent_tid = 0, child_tid = 0, tls = 0).
+    // Argument order is the same on x86_64 and aarch64.
+    // SAFETY: all pointer arguments are null; a null stack requests fork-style
+    // copy-on-write of the caller's stack.
+    let ret = unsafe { syscall5(nr::CLONE, SIGCHLD, 0, 0, 0, 0) };
+    from_ret_i32(ret)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,5 +106,36 @@ mod tests {
         // succeeds or fails with EPERM depending on session state; both are
         // valid, non-panicking outcomes. Assert it does not blow up.
         let _ = setpgid(0, 0);
+    }
+
+    #[test]
+    fn fork_child_runs_and_is_reaped() {
+        use crate::fd;
+        use crate::wait;
+
+        // The child talks to the parent over a pipe, then exits. It runs in a
+        // multithreaded test harness, so it must stay strictly async-signal-
+        // safe: only raw syscalls, no allocation (that is the very hazard
+        // `fork`'s safety note describes). `exit_group` ends it without running
+        // any destructors.
+        let (r, w) = fd::pipe2(0).expect("pipe2");
+        match unsafe { fork() }.expect("fork") {
+            0 => {
+                let _ = fd::write(w, b"K");
+                exit_group(7);
+            }
+            pid => {
+                fd::close(w).expect("close w");
+                let mut buf = [0u8; 1];
+                let n = fd::read(r, &mut buf).expect("read");
+                assert_eq!(&buf[..n], b"K");
+                fd::close(r).expect("close r");
+
+                let (wpid, status) = wait::waitpid(pid, 0).expect("waitpid");
+                assert_eq!(wpid, pid);
+                assert!(wait::wifexited(status));
+                assert_eq!(wait::wexitstatus(status), 7);
+            }
+        }
     }
 }

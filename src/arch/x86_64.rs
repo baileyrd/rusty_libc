@@ -11,15 +11,19 @@ use core::arch::asm;
 /// x86_64 syscall numbers used by this crate (from `<asm/unistd_64.h>`).
 pub mod nr {
     pub const READ: usize = 0;
+    pub const WRITE: usize = 1;
     pub const CLOSE: usize = 3;
     pub const POLL: usize = 7;
+    pub const LSEEK: usize = 8;
     pub const RT_SIGACTION: usize = 13;
     pub const RT_SIGRETURN: usize = 15;
     pub const IOCTL: usize = 16;
     pub const DUP: usize = 32;
     pub const DUP2: usize = 33;
     pub const GETPID: usize = 39;
+    pub const CLONE: usize = 56;
     pub const KILL: usize = 62;
+    pub const MEMFD_CREATE: usize = 319;
     pub const WAIT4: usize = 61;
     pub const FCNTL: usize = 72;
     pub const UMASK: usize = 95;

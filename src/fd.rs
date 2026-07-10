@@ -43,6 +43,14 @@ pub fn read(fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
     from_ret(ret)
 }
 
+/// Write up to `buf.len()` bytes from `buf` to `fd`. Returns the byte count
+/// actually written (may be short).
+pub fn write(fd: i32, buf: &[u8]) -> Result<usize, Errno> {
+    // SAFETY: `buf` is a valid slice of `buf.len()` bytes the kernel only reads.
+    let ret = unsafe { syscall3(nr::WRITE, fd as usize, buf.as_ptr() as usize, buf.len()) };
+    from_ret(ret)
+}
+
 /// Wait for events on `fds`, up to `timeout` milliseconds (negative blocks
 /// indefinitely). Returns the number of fds with non-zero `revents`.
 ///
@@ -154,6 +162,37 @@ pub fn fcntl(fd: i32, cmd: i32, arg: i32) -> Result<i32, Errno> {
     from_ret_i32(ret)
 }
 
+/// `memfd_create(2)` flag: set close-on-exec on the returned descriptor.
+pub const MFD_CLOEXEC: u32 = 0x0001;
+
+/// `lseek(2)` whence: set the offset to `offset` bytes from the start.
+pub const SEEK_SET: i32 = 0;
+/// `lseek(2)` whence: set the offset relative to the current position.
+pub const SEEK_CUR: i32 = 1;
+/// `lseek(2)` whence: set the offset relative to end-of-file.
+pub const SEEK_END: i32 = 2;
+
+/// Create an anonymous, memory-backed file and return a descriptor for it.
+///
+/// The `name` (used only for `/proc/self/fd` and debugging) must be a
+/// nul-terminated C string. This is the thread-free way to feed a here-document
+/// into a child's input: write the body, `lseek` back to the start, and `dup2`
+/// the descriptor onto the target fd.
+pub fn memfd_create(name: &core::ffi::CStr, flags: u32) -> Result<i32, Errno> {
+    // SAFETY: `name` is a valid nul-terminated C string; the kernel reads it.
+    let ret = unsafe { syscall2(nr::MEMFD_CREATE, name.as_ptr() as usize, flags as usize) };
+    from_ret_i32(ret)
+}
+
+/// Reposition the offset of `fd` per `whence` (a `SEEK_*` constant), returning
+/// the resulting absolute offset.
+pub fn lseek(fd: i32, offset: i64, whence: i32) -> Result<i64, Errno> {
+    // On 64-bit Linux `lseek` takes a 64-bit `off_t` directly.
+    // SAFETY: plain integer arguments.
+    let ret = unsafe { syscall3(nr::LSEEK, fd as usize, offset as usize, whence as usize) };
+    from_ret(ret).map(|v| v as i64)
+}
+
 /// Crate-internal `ioctl(2)` shim for the terminal queries.
 ///
 /// # Safety
@@ -230,5 +269,25 @@ mod tests {
     #[test]
     fn close_bad_fd_is_ebadf() {
         assert_eq!(close(-1), Err(Errno(9))); // EBADF
+    }
+
+    #[test]
+    fn memfd_write_seek_read_roundtrip() {
+        // The thread-free here-doc path: create → write body → rewind → read.
+        let fd = memfd_create(c"rusty_libc_test", MFD_CLOEXEC).expect("memfd_create");
+        assert!(fd >= 0);
+
+        assert_eq!(write(fd, b"here-doc body").expect("write"), 13);
+        // After writing, the offset is at the end; rewind to read it back.
+        assert_eq!(lseek(fd, 0, SEEK_SET).expect("lseek"), 0);
+
+        let mut buf = [0u8; 32];
+        let n = read(fd, &mut buf).expect("read");
+        assert_eq!(&buf[..n], b"here-doc body");
+
+        // It is a real seekable file, unlike a pipe: SEEK_END gives the size.
+        assert_eq!(lseek(fd, 0, SEEK_END).expect("lseek end"), 13);
+
+        close(fd).expect("close");
     }
 }
