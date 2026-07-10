@@ -10,17 +10,12 @@ env:
   RUSTFLAGS: -D warnings
 
 jobs:
+  # Phase 1 targets x86_64 only; the crate emits a compile_error! on other
+  # arches. Phase 5 adds the aarch64 syscall table and an emulated runner, and
+  # expands this into a build+test matrix.
   test:
-    name: test (${{ matrix.target }})
+    name: test (x86_64-unknown-linux-gnu)
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          # aarch64 is built (layout assertions + no_std) but not run natively;
-          # Phase 5 wires up an emulated runner for the full test suite.
-          - aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
 
@@ -28,17 +23,15 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup component add rustfmt clippy
-          rustup target add ${{ matrix.target }}
 
       - name: Format
         run: cargo fmt --all --check
 
       - name: Clippy
-        run: cargo clippy --target ${{ matrix.target }} --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
 
       - name: Build (no_std)
-        run: cargo build --target ${{ matrix.target }}
+        run: cargo build
 
       - name: Test
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo test --target ${{ matrix.target }}
+        run: cargo test

@@ -24,3 +24,16 @@
 #![cfg_attr(not(test), no_std)]
 // The entire crate is Linux-only; on other targets it compiles to nothing.
 #![cfg(target_os = "linux")]
+// `offset_of!` in const assertions needs a recent compiler; it is stable.
+#![allow(clippy::missing_safety_doc)]
+
+pub mod arch;
+pub mod fd;
+pub mod process;
+pub mod rlimit;
+pub mod termios;
+pub mod tty;
+pub mod umask;
+pub mod wait;
+
+pub use arch::{from_ret, Errno};
