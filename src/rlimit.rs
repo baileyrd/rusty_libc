@@ -37,6 +37,9 @@ pub const RLIMIT_MSGQUEUE: i32 = 12;
 pub const RLIMIT_NICE: i32 = 13;
 /// Ceiling on the real-time priority.
 pub const RLIMIT_RTPRIO: i32 = 14;
+/// Ceiling on real-time CPU time consumed without a blocking syscall, in
+/// microseconds.
+pub const RLIMIT_RTTIME: i32 = 15;
 
 /// A soft/hard resource-limit pair (kernel `struct rlimit64`; both fields are
 /// always `u64`).
