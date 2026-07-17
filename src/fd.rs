@@ -108,6 +108,7 @@ pub fn openat(dirfd: i32, path: &CStr, flags: i32, mode: u32) -> Result<i32, Err
 ///
 /// Implemented over `openat` so it is identical on x86_64 and aarch64 (aarch64
 /// has no legacy `open` syscall).
+#[inline]
 pub fn open(path: &CStr, flags: i32, mode: u32) -> Result<i32, Errno> {
     openat(AT_FDCWD, path, flags, mode)
 }

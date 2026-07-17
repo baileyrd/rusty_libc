@@ -250,6 +250,7 @@ unsafe fn install(sig: i32, handler: Sighandler, flags: u64) -> Result<Sighandle
 /// asynchronously in signal context, where only async-signal-safe operations
 /// are permitted, and `handler` (when not a sentinel) must be a valid
 /// `extern "C" fn(i32)` pointer that lives at least until it is replaced.
+#[inline]
 pub unsafe fn signal(sig: i32, handler: Sighandler) -> Result<Sighandler, Errno> {
     // SAFETY: forwarded to the caller's `handler` contract.
     unsafe { install(sig, handler, SA_RESTART) }
@@ -267,6 +268,7 @@ pub unsafe fn signal(sig: i32, handler: Sighandler) -> Result<Sighandler, Errno>
 ///
 /// # Safety
 /// Same contract as [`signal`].
+#[inline]
 pub unsafe fn sigaction(sig: i32, handler: Sighandler, flags: u64) -> Result<Sighandler, Errno> {
     // SAFETY: forwarded to the caller's `handler` contract.
     unsafe { install(sig, handler, flags) }
