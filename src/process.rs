@@ -340,11 +340,12 @@ mod tests {
         use crate::fd;
         use crate::wait;
 
-        // The child talks to the parent over a pipe, then exits. It runs in a
-        // multithreaded test harness, so it must stay strictly async-signal-
-        // safe: only raw syscalls, no allocation (that is the very hazard
-        // `fork`'s safety note describes). `exit_group` ends it without running
-        // any destructors.
+        // The child talks to the parent over a pipe, then exits. CI runs the
+        // suite with `--test-threads=1` (see ci.yml) so the process is
+        // effectively single-threaded at the fork point; even so, the child
+        // stays strictly async-signal-safe as defense-in-depth: only raw
+        // syscalls, no allocation (the very hazard `fork`'s safety note
+        // describes). `exit_group` ends it without running any destructors.
         let (r, w) = fd::pipe2(0).expect("pipe2");
         match unsafe { fork() }.expect("fork") {
             0 => {

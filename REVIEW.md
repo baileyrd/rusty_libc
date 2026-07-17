@@ -42,7 +42,7 @@ already ships.
 
 ## B. Ergonomics and interop
 
-> **Status:** items 6–10 are implemented on this branch.
+> **Status:** items 6–12 are implemented on this branch.
 
 6. **Named `Errno` constants.** *(done)* Callers and tests currently compare against
    magic numbers (`Errno(9)`, `Errno(22)`, `Errno(25)`, `Errno(10)`). Add
@@ -73,12 +73,12 @@ already ships.
     `O_CLOEXEC`. Export `O_CLOEXEC`/`O_NONBLOCK` (shared with item 2) so
     `pipe2(O_CLOEXEC)` reads cleanly.
 
-11. **`read_all` / `write_all` helpers.** Even with `SA_RESTART`, writes to
+11. **`read_all` / `write_all` helpers.** *(done)* Even with `SA_RESTART`, writes to
     pipes and terminals can be short, and reads can return fewer bytes than
     requested. A small loop that drains/fills a buffer (and treats `EINTR` as
     retry) removes a class of bugs from callers.
 
-12. **`tcsetattr` action variants.** `tcsetattr` hardcodes `TCSETSW`
+12. **`tcsetattr` action variants.** *(done)* `tcsetattr` hardcodes `TCSETSW`
     (drain = `TCSADRAIN`). Terminal restore on exit typically wants
     `TCSAFLUSH` (`TCSETSF`) to discard pending input, and non-blocking paths
     want `TCSANOW` (`TCSETS`). Add an `optional_actions` parameter or
@@ -86,24 +86,26 @@ already ships.
 
 ## C. Build, CI, and correctness hygiene
 
-13. **Declare an MSRV.** The crate uses `#[unsafe(naked)]` + `naked_asm!`
+> **Status:** items 13–16 are implemented on this branch.
+
+13. **Declare an MSRV.** *(done)* The crate uses `#[unsafe(naked)]` + `naked_asm!`
     (stable since Rust 1.88), `offset_of!` (1.77), and `c"…"` literals (1.77),
     so the effective MSRV is 1.88. Add `rust-version = "1.88"` to `Cargo.toml`
     and an MSRV job to CI so a future edit doesn't silently raise it.
 
-14. **Tighten lints.** Promote `unsafe_op_in_unsafe_fn` from `warn` to `deny`,
+14. **Tighten lints.** *(done)* Promote `unsafe_op_in_unsafe_fn` from `warn` to `deny`,
     add `#![deny(missing_docs)]` (the public surface is already almost fully
     documented), and add a `cargo doc --no-deps -D warnings` step to CI so
     doc-link rot is caught.
 
-15. **Guard the real `no_std` build.** Because the test harness pulls in `std`
+15. **Guard the real `no_std` build.** *(done)* Because the test harness pulls in `std`
     via `cfg(not(test))`, `cargo build` on `*-linux-gnu` doesn't prove the
     crate links with no `std`. Add a genuinely `no_std` smoke target to CI
     (e.g. build a tiny `#![no_std] #![no_main]` example, or
     `cargo build -Z build-std=core` against a `*-none` sanity target) so an
     accidental `std::`/`alloc::` reference fails CI instead of shipping.
 
-16. **Make the fork test harness-safe.** `fork_child_runs_and_is_reaped` forks
+16. **Make the fork test harness-safe.** *(done)* `fork_child_runs_and_is_reaped` forks
     inside the multithreaded `cargo test` harness — exactly the hazard the
     `fork` safety note warns about. It is careful (child touches only raw
     syscalls), but it is still technically unsound under parallelism. Either

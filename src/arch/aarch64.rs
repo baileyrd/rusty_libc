@@ -15,6 +15,7 @@
 use core::arch::asm;
 
 /// aarch64 syscall numbers used by this crate (from `<asm-generic/unistd.h>`).
+#[allow(missing_docs)] // each constant's name is its documentation.
 pub mod nr {
     pub const GETCWD: usize = 17;
     pub const DUP: usize = 23;
@@ -50,6 +51,7 @@ pub mod nr {
     pub const EXECVEAT: usize = 387;
 }
 
+/// Issue syscall `n` with no arguments; returns the raw `x0` result.
 #[inline]
 pub unsafe fn syscall0(n: usize) -> usize {
     let ret: usize;
@@ -64,6 +66,7 @@ pub unsafe fn syscall0(n: usize) -> usize {
     ret
 }
 
+/// Issue syscall `n` with 1 argument; returns the raw `x0` result.
 #[inline]
 pub unsafe fn syscall1(n: usize, a1: usize) -> usize {
     let ret: usize;
@@ -78,6 +81,7 @@ pub unsafe fn syscall1(n: usize, a1: usize) -> usize {
     ret
 }
 
+/// Issue syscall `n` with 2 arguments; returns the raw `x0` result.
 #[inline]
 pub unsafe fn syscall2(n: usize, a1: usize, a2: usize) -> usize {
     let ret: usize;
@@ -93,6 +97,7 @@ pub unsafe fn syscall2(n: usize, a1: usize, a2: usize) -> usize {
     ret
 }
 
+/// Issue syscall `n` with 3 arguments; returns the raw `x0` result.
 #[inline]
 pub unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> usize {
     let ret: usize;
@@ -109,6 +114,7 @@ pub unsafe fn syscall3(n: usize, a1: usize, a2: usize, a3: usize) -> usize {
     ret
 }
 
+/// Issue syscall `n` with 4 arguments; returns the raw `x0` result.
 #[inline]
 pub unsafe fn syscall4(n: usize, a1: usize, a2: usize, a3: usize, a4: usize) -> usize {
     let ret: usize;
@@ -126,6 +132,7 @@ pub unsafe fn syscall4(n: usize, a1: usize, a2: usize, a3: usize, a4: usize) -> 
     ret
 }
 
+/// Issue syscall `n` with 5 arguments; returns the raw `x0` result.
 #[inline]
 pub unsafe fn syscall5(n: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5: usize) -> usize {
     let ret: usize;
@@ -144,6 +151,7 @@ pub unsafe fn syscall5(n: usize, a1: usize, a2: usize, a3: usize, a4: usize, a5:
     ret
 }
 
+/// Issue syscall `n` with 6 arguments; returns the raw `x0` result.
 #[inline]
 pub unsafe fn syscall6(
     n: usize,

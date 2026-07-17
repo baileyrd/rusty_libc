@@ -173,6 +173,39 @@ pub fn write(fd: i32, buf: &[u8]) -> Result<usize, Errno> {
     from_ret(ret)
 }
 
+/// Write **all** of `buf` to `fd`, looping over short writes. Retries on
+/// `EINTR`; fails with `EIO` if a write reports zero progress.
+///
+/// [`write()`] can return fewer bytes than requested (especially to pipes and
+/// terminals); this drains the whole buffer so callers do not have to.
+pub fn write_all(fd: i32, mut buf: &[u8]) -> Result<(), Errno> {
+    while !buf.is_empty() {
+        match write(fd, buf) {
+            Ok(0) => return Err(Errno::EIO),
+            Ok(n) => buf = &buf[n..],
+            Err(e) if e == Errno::EINTR => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Read into `buf` until it is full or end-of-file, looping over short reads
+/// and retrying on `EINTR`. Returns the number of bytes read, which is less
+/// than `buf.len()` only when EOF was reached first.
+pub fn read_all(fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
+    let mut total = 0;
+    while total < buf.len() {
+        match read(fd, &mut buf[total..]) {
+            Ok(0) => break, // EOF
+            Ok(n) => total += n,
+            Err(e) if e == Errno::EINTR => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(total)
+}
+
 /// Wait for events on `fds`, up to `timeout` milliseconds (negative blocks
 /// indefinitely). Returns the number of fds with non-zero `revents`.
 ///
@@ -396,6 +429,31 @@ mod tests {
         let mut buf = [0u8; 1];
         assert_eq!(read(r, &mut buf), Err(Errno::EAGAIN));
 
+        close(r).expect("close r");
+        close(w).expect("close w");
+    }
+
+    #[test]
+    fn write_all_read_all_roundtrip() {
+        let (r, w) = pipe2(0).expect("pipe2");
+        write_all(w, b"hello world").expect("write_all");
+        close(w).expect("close w");
+
+        let mut buf = [0u8; 32];
+        // Buffer larger than the data: read_all stops at EOF, returning 11.
+        let n = read_all(r, &mut buf).expect("read_all");
+        assert_eq!(&buf[..n], b"hello world");
+        close(r).expect("close r");
+    }
+
+    #[test]
+    fn read_all_fills_exact_buffer() {
+        let (r, w) = pipe2(0).expect("pipe2");
+        write_all(w, b"abcdef").expect("write_all");
+        // Buffer smaller than the data: read_all fills it exactly.
+        let mut buf = [0u8; 3];
+        assert_eq!(read_all(r, &mut buf).expect("read_all"), 3);
+        assert_eq!(&buf, b"abc");
         close(r).expect("close r");
         close(w).expect("close w");
     }

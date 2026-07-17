@@ -2,6 +2,10 @@
 name = "rusty_libc"
 version = "0.0.1"
 edition = "2021"
+# `#[unsafe(naked)]` + `naked_asm!` (the x86_64 sigreturn trampoline) stabilized
+# in 1.88; that is the effective floor. `offset_of!` and `c"…"` need 1.77,
+# `core::error::Error` needs 1.81.
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 description = "no_std, zero-dependency, Linux-only raw-syscall replacement for the libc crate, built for rush."
 repository = "https://github.com/baileyrd/rusty_libc"
@@ -19,4 +23,5 @@ default = []
 std = []
 
 [lints.rust]
-unsafe_op_in_unsafe_fn = "warn"
+unsafe_op_in_unsafe_fn = "deny"
+missing_docs = "deny"

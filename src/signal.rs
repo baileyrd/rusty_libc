@@ -12,7 +12,7 @@
 //! returns, control resumes at whatever address `sa_restorer` points to, and
 //! that code must invoke `SYS_rt_sigreturn` to unwind the kernel-pushed signal
 //! frame. glibc supplies this trampoline; since we do not link glibc's
-//! `sigaction`, we must supply our own. [`sigreturn_trampoline`] is a naked
+//! `sigaction`, we must supply our own. `sigreturn_trampoline` is a naked
 //! function doing exactly `mov rax, RT_SIGRETURN; syscall`, and every
 //! [`signal`] install sets `SA_RESTORER` and points `sa_restorer` at it.
 //!
