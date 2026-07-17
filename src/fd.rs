@@ -206,6 +206,44 @@ pub fn write_all(fd: i32, mut buf: &[u8]) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Read from `fd` at absolute byte `offset` into `buf`, **without** moving the
+/// file's current offset. Returns the byte count (0 at end-of-file).
+///
+/// Requires a seekable `fd` (fails with `ESPIPE` on a pipe/socket).
+pub fn pread(fd: i32, buf: &mut [u8], offset: i64) -> Result<usize, Errno> {
+    // On 64-bit Linux `pread64` takes the offset as a single register argument.
+    // SAFETY: `buf` is a valid, exclusively-borrowed slice; the kernel writes at
+    // most `buf.len()` bytes.
+    let ret = unsafe {
+        syscall4(
+            nr::PREAD64,
+            fd as usize,
+            buf.as_mut_ptr() as usize,
+            buf.len(),
+            offset as usize,
+        )
+    };
+    from_ret(ret)
+}
+
+/// Write `buf` to `fd` at absolute byte `offset`, **without** moving the file's
+/// current offset. Returns the byte count actually written (may be short).
+///
+/// Requires a seekable `fd` (fails with `ESPIPE` on a pipe/socket).
+pub fn pwrite(fd: i32, buf: &[u8], offset: i64) -> Result<usize, Errno> {
+    // SAFETY: `buf` is a valid slice of `buf.len()` bytes the kernel only reads.
+    let ret = unsafe {
+        syscall4(
+            nr::PWRITE64,
+            fd as usize,
+            buf.as_ptr() as usize,
+            buf.len(),
+            offset as usize,
+        )
+    };
+    from_ret(ret)
+}
+
 /// Read into `buf` until it is full or end-of-file, looping over short reads
 /// and retrying on `EINTR`. Returns the number of bytes read, which is less
 /// than `buf.len()` only when EOF was reached first.
@@ -582,6 +620,28 @@ mod tests {
         let fd = openat(AT_FDCWD, c"/dev/null", O_RDONLY, 0).expect("openat /dev/null");
         let mut buf = [0u8; 4];
         assert_eq!(read(fd, &mut buf).expect("read"), 0); // /dev/null is EOF
+        close(fd).expect("close");
+    }
+
+    #[test]
+    fn pread_pwrite_do_not_move_offset() {
+        let fd = memfd_create(c"rusty_libc_pwrite", MFD_CLOEXEC).expect("memfd_create");
+
+        // Lay down 11 bytes at offset 0 via pwrite; the file offset stays at 0.
+        assert_eq!(pwrite(fd, b"hello world", 0).expect("pwrite"), 11);
+        // Overwrite "world" -> "WORLD" at offset 6, still without moving offset.
+        assert_eq!(pwrite(fd, b"WORLD", 6).expect("pwrite"), 5);
+
+        // pread at an explicit offset reads there without touching the offset.
+        let mut buf = [0u8; 5];
+        assert_eq!(pread(fd, &mut buf, 6).expect("pread"), 5);
+        assert_eq!(&buf, b"WORLD");
+
+        // Because neither p-call moved the offset, a plain read starts at 0.
+        let mut all = [0u8; 16];
+        let n = read(fd, &mut all).expect("read");
+        assert_eq!(&all[..n], b"hello WORLD");
+
         close(fd).expect("close");
     }
 

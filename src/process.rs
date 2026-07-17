@@ -232,6 +232,16 @@ pub fn getsid(pid: i32) -> Result<i32, Errno> {
     from_ret_i32(ret)
 }
 
+/// Get the calling process's own process-group ID. Convenience for
+/// [`getpgid`]`(0)` — the classic no-argument `getpgrp()`.
+///
+/// Implemented via `getpgid(0)` so it is identical on both arches (aarch64 has
+/// no dedicated `getpgrp` syscall); querying your own group cannot meaningfully
+/// fail.
+pub fn getpgrp() -> Result<i32, Errno> {
+    getpgid(0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -271,6 +281,8 @@ mod tests {
         // Querying by explicit pid agrees with the pid==0 shorthand.
         assert_eq!(getpgid(getpid()).expect("getpgid(pid)"), pgid);
         assert_eq!(getsid(getpid()).expect("getsid(pid)"), sid);
+        // getpgrp() is getpgid(0).
+        assert_eq!(getpgrp().expect("getpgrp"), pgid);
     }
 
     #[test]

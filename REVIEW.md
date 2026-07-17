@@ -211,7 +211,7 @@ above.
   modules with the `std` feature. Refresh it: status, a module/coverage table,
   a short usage example, and the `std` feature flag. Cheap, and it's the first
   thing a consumer reads.
-- **Further candidates** (not in the 10): `waitid` (peek a child's status with
-  `WNOWAIT` without reaping — useful for job tables), `pread`/`pwrite`,
-  `getpgrp()` as a `getpgid(0)` convenience, and `EWOULDBLOCK`/`EINPROGRESS`
-  `Errno` aliases.
+- *(done)* **Further candidates** (not in the 10): `waitid` (peek a child's
+  status with `WNOWAIT` without reaping — useful for job tables), `pread`/
+  `pwrite`, `getpgrp()` as a `getpgid(0)` convenience, and
+  `EWOULDBLOCK`/`EINPROGRESS` `Errno` aliases.

@@ -19,11 +19,11 @@ assertions), not glibc's.
 | Module | What it provides |
 |---|---|
 | `arch` | `syscall0`..`syscall6`, the `Errno` newtype (named constants, `Display`, `Error`), and `-errno` decoding |
-| `fd` | `read`/`write`(`_all`), `open`/`openat`, `poll`, `pipe2`, `dup`/`dup2`/`dup3`, `close`, `fcntl`, `memfd_create`, `lseek`; `O_*`/`F_*`/`POLL*` constants |
+| `fd` | `read`/`write`(`_all`), `pread`/`pwrite`, `open`/`openat`, `poll`, `pipe2`, `dup`/`dup2`/`dup3`, `close`, `fcntl`, `memfd_create`, `lseek`; `O_*`/`F_*`/`POLL*` constants |
 | `fs` | `statx`/`stat`/`lstat`/`fstat`, `faccessat`/`access`, `unlinkat`/`mkdirat`/`renameat2`/`symlinkat`/`readlinkat` (+ `unlink`/`mkdir`/`rename`/… shorthands) |
-| `process` | pids/uids/gids (real & effective), `setpgid`/`setsid`/`getpgid`/`getsid`, `kill`/`killpg`, `chdir`/`fchdir`/`getcwd`, `exit_group`, raw `fork`, `execve`/`execveat` |
+| `process` | pids/uids/gids (real & effective), `setpgid`/`setsid`/`getpgid`/`getsid`/`getpgrp`, `kill`/`killpg`, `chdir`/`fchdir`/`getcwd`, `exit_group`, raw `fork`, `execve`/`execveat` |
 | `signal` | `signal`/`sigaction` (+ `SA_*`), `sigprocmask`/`sigpending`/`sigsuspend`, the x86_64 `SA_RESTORER` trampoline, `SIG*` constants |
-| `wait` | `waitpid` (via `wait4`) and the `W*` status decoders |
+| `wait` | `waitpid` (via `wait4`), `waitid` (with `WNOWAIT` and a `Siginfo`), and the `W*` status decoders |
 | `termios` | kernel `Termios`, `tcgetattr`/`tcsetattr`(`_with`), `make_raw`, `tcflush`/`tcdrain`, tty pgrp queries, `isatty`, full `c_cc`/flag constants |
 | `tty` | `Winsize` window-size query |
 | `rlimit` | `prlimit`/`getrlimit`/`setrlimit`, `RLIMIT_*` |

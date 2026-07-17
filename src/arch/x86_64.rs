@@ -21,6 +21,8 @@ pub mod nr {
     pub const RT_SIGPROCMASK: usize = 14;
     pub const RT_SIGRETURN: usize = 15;
     pub const IOCTL: usize = 16;
+    pub const PREAD64: usize = 17;
+    pub const PWRITE64: usize = 18;
     pub const NANOSLEEP: usize = 35;
     pub const DUP: usize = 32;
     pub const DUP2: usize = 33;
@@ -43,6 +45,7 @@ pub mod nr {
     pub const GETPPID: usize = 110;
     pub const SETSID: usize = 112;
     pub const GETPGID: usize = 121;
+    pub const WAITID: usize = 247;
     pub const GETSID: usize = 124;
     pub const RT_SIGPENDING: usize = 127;
     pub const RT_SIGSUSPEND: usize = 130;
