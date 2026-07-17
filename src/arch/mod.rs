@@ -77,6 +77,7 @@ impl Errno {
             40 => "ELOOP",
             110 => "ETIMEDOUT",
             111 => "ECONNREFUSED",
+            115 => "EINPROGRESS",
             _ => return None,
         })
     }
@@ -128,6 +129,12 @@ impl Errno {
     pub const EPIPE: Errno = Errno(32);
     /// Function not implemented.
     pub const ENOSYS: Errno = Errno(38);
+    /// Operation would block. On Linux this is the **same** value as
+    /// [`EAGAIN`](Self::EAGAIN) (11); provided as an alias for readable
+    /// call-site matching.
+    pub const EWOULDBLOCK: Errno = Errno(11);
+    /// Operation now in progress (e.g. a non-blocking `connect`).
+    pub const EINPROGRESS: Errno = Errno(115);
 }
 
 impl core::fmt::Display for Errno {
@@ -196,6 +203,10 @@ mod tests {
         assert_eq!(Errno::ENOTTY, Errno(25));
         assert_eq!(Errno::ECHILD, Errno(10));
         assert_eq!(Errno::EBADF.code(), 9);
+        // EWOULDBLOCK is an alias for EAGAIN on Linux; EINPROGRESS is distinct.
+        assert_eq!(Errno::EWOULDBLOCK, Errno::EAGAIN);
+        assert_eq!(Errno::EINPROGRESS, Errno(115));
+        assert_eq!(Errno(115).name(), Some("EINPROGRESS"));
     }
 
     #[test]

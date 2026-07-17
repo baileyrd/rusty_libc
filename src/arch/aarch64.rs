@@ -39,6 +39,9 @@ pub mod nr {
     pub const EXIT_GROUP: usize = 94;
     pub const NANOSLEEP: usize = 101;
     pub const CLOCK_GETTIME: usize = 113;
+    pub const PREAD64: usize = 67;
+    pub const PWRITE64: usize = 68;
+    pub const WAITID: usize = 95;
     pub const KILL: usize = 129;
     pub const RT_SIGSUSPEND: usize = 133;
     pub const RT_SIGACTION: usize = 134;
