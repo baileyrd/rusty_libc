@@ -1,4 +1,9 @@
-//! Resource limits via `prlimit64` (used for both get and set, `pid = 0`).
+//! Resource limits via `prlimit64` (used for both get and set).
+//!
+//! Note: there is **no** `RLIMIT_*` for pipe capacity — a pipe's buffer size is
+//! a per-fd property set with `fcntl(fd, F_SETPIPE_SZ, size)` (see
+//! [`crate::fd::F_SETPIPE_SZ`]), not a resource limit, so it lives in `fd`, not
+//! here.
 
 use crate::arch::nr;
 use crate::arch::{from_ret, syscall4, Errno};
@@ -55,39 +60,55 @@ pub struct Rlimit {
 
 const _: () = assert!(core::mem::size_of::<Rlimit>() == 16);
 
-/// Get the current soft/hard limit for `resource` (a `RLIMIT_*` constant).
-pub fn getrlimit(resource: i32) -> Result<Rlimit, Errno> {
-    let mut old = Rlimit { cur: 0, max: 0 };
-    // prlimit64(pid=0, resource, new=NULL, old=&mut).
-    // SAFETY: `new` is null; `old` is a valid `*mut rlimit64`.
-    let ret = unsafe {
-        syscall4(
-            nr::PRLIMIT64,
-            0,
-            resource as usize,
-            0,
-            &mut old as *mut Rlimit as usize,
-        )
+/// Get and/or set the limit for `resource` on process `pid` in one call, the
+/// full `prlimit64` primitive.
+///
+/// `pid == 0` targets the calling process. When `new` is `Some`, the limit is
+/// set to it; when `old` is `Some`, the previous limit is written there. Both
+/// may be supplied to atomically swap. Setting another process's limit needs
+/// the appropriate privilege (`CAP_SYS_RESOURCE`); [`getrlimit`]/[`setrlimit`]
+/// are the common `pid == 0` shorthands.
+pub fn prlimit(
+    pid: i32,
+    resource: i32,
+    new: Option<&Rlimit>,
+    old: Option<&mut Rlimit>,
+) -> Result<(), Errno> {
+    let new_ptr = match new {
+        Some(n) => n as *const Rlimit as usize,
+        None => 0,
     };
-    from_ret(ret)?;
-    Ok(old)
-}
-
-/// Set the soft/hard limit for `resource` to `limit`.
-pub fn setrlimit(resource: i32, limit: &Rlimit) -> Result<(), Errno> {
-    // prlimit64(pid=0, resource, new=&, old=NULL).
-    // SAFETY: `new` is a valid `*const rlimit64` the kernel only reads; `old`
-    // is null.
+    let old_ptr = match old {
+        Some(o) => o as *mut Rlimit as usize,
+        None => 0,
+    };
+    // prlimit64(pid, resource, new, old).
+    // SAFETY: both pointers are either null or valid `rlimit64`s — `new` read
+    // only, `old` written only.
     let ret = unsafe {
         syscall4(
             nr::PRLIMIT64,
-            0,
+            pid as usize,
             resource as usize,
-            limit as *const Rlimit as usize,
-            0,
+            new_ptr,
+            old_ptr,
         )
     };
     from_ret(ret).map(|_| ())
+}
+
+/// Get the current soft/hard limit for `resource` (a `RLIMIT_*` constant) of
+/// the calling process. Shorthand for [`prlimit`] with `pid = 0`.
+pub fn getrlimit(resource: i32) -> Result<Rlimit, Errno> {
+    let mut old = Rlimit { cur: 0, max: 0 };
+    prlimit(0, resource, None, Some(&mut old))?;
+    Ok(old)
+}
+
+/// Set the soft/hard limit for `resource` on the calling process to `limit`.
+/// Shorthand for [`prlimit`] with `pid = 0`.
+pub fn setrlimit(resource: i32, limit: &Rlimit) -> Result<(), Errno> {
+    prlimit(0, resource, Some(limit), None)
 }
 
 #[cfg(test)]
@@ -113,6 +134,28 @@ mod tests {
 
     #[test]
     fn bad_resource_is_einval() {
-        assert_eq!(getrlimit(9999), Err(Errno(22))); // EINVAL
+        assert_eq!(getrlimit(9999), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn prlimit_reads_and_swaps() {
+        // Read-only (new = None) matches getrlimit.
+        let mut cur = Rlimit { cur: 0, max: 0 };
+        prlimit(0, RLIMIT_NOFILE, None, Some(&mut cur)).expect("prlimit read");
+        assert_eq!(cur, getrlimit(RLIMIT_NOFILE).unwrap());
+
+        // Atomic swap: set a lowered soft limit while reading the old value.
+        let lowered = Rlimit {
+            cur: cur.cur.min(64),
+            max: cur.max,
+        };
+        let mut prev = Rlimit { cur: 0, max: 0 };
+        prlimit(0, RLIMIT_NOFILE, Some(&lowered), Some(&mut prev)).expect("prlimit swap");
+        assert_eq!(prev, cur);
+        assert_eq!(getrlimit(RLIMIT_NOFILE).unwrap().cur, lowered.cur);
+
+        // Restore (set-only, old = None).
+        prlimit(0, RLIMIT_NOFILE, Some(&cur), None).expect("prlimit restore");
+        assert_eq!(getrlimit(RLIMIT_NOFILE).unwrap(), cur);
     }
 }

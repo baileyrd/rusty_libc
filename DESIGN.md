@@ -35,7 +35,7 @@ ground rules that fall out of that analysis:
 | `termios` | kernel-layout `Termios` (**NCCS = 19**, no glibc speed fields), `tcgetattr`, `tcsetattr(TCSADRAIN)`, `tcgetpgrp`, `tcsetpgrp`, `isatty`; `ICANON ECHO ISIG IEXTEN IXON ICRNL INLCR VMIN VTIME` | `ioctl(TCGETS)`, `ioctl(TCSETSW)`, `ioctl(TIOCGPGRP/TIOCSPGRP)`; `isatty` = `TCGETS` succeeds |
 | `tty` | `Winsize`, window-size query | `ioctl(TIOCGWINSZ)` |
 | `fd` | `read`, `poll(&mut [PollFd], timeout)`, `pipe2`, `dup`, `dup2`, `close`, `fcntl` (`F_GETFD`/`F_SETFD`/`FD_CLOEXEC`), `POLLIN` | `SYS_read`, `SYS_poll` / `SYS_ppoll` (aarch64 has no `poll`), `SYS_pipe2`, `SYS_dup`, `SYS_dup2` / `SYS_dup3` (aarch64 has no `dup2`), `SYS_close`, `SYS_fcntl` |
-| `rlimit` | `getrlimit`, `setrlimit`, `Rlimit { cur, max }` (always u64), `RLIM_INFINITY`, 16 `RLIMIT_*` consts (`CORE DATA FSIZE NICE SIGPENDING MEMLOCK RSS NOFILE MSGQUEUE RTPRIO STACK CPU NPROC AS LOCKS` + pipe) | `SYS_prlimit64` (pid 0) for both directions |
+| `rlimit` | `prlimit`, `getrlimit`, `setrlimit`, `Rlimit { cur, max }` (always u64), `RLIM_INFINITY`, `RLIMIT_*` consts (`CORE DATA FSIZE NICE SIGPENDING MEMLOCK RSS NOFILE MSGQUEUE RTPRIO STACK CPU NPROC AS LOCKS RTTIME`) | `SYS_prlimit64` for both directions (`getrlimit`/`setrlimit` = pid 0). Pipe capacity is **not** an rlimit — it's `fcntl(F_SETPIPE_SZ)` in `fd` |
 | `umask` | `umask(mode)` | `SYS_umask` |
 
 Design conventions:

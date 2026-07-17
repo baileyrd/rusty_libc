@@ -31,6 +31,14 @@ pub const F_GETFL: i32 = 3;
 pub const F_SETFL: i32 = 4;
 /// `fcntl(2)` command: like `F_DUPFD` but sets close-on-exec on the new fd.
 pub const F_DUPFD_CLOEXEC: i32 = 1030;
+/// `fcntl(2)` command: set a pipe's capacity in bytes (rounded up to a page,
+/// capped by `/proc/sys/fs/pipe-max-size`); returns the actual size.
+///
+/// A pipe's buffer size is a per-fd property set here — Linux has no
+/// `RLIMIT_*` for it (see [`crate::rlimit`]).
+pub const F_SETPIPE_SZ: i32 = 1031;
+/// `fcntl(2)` command: get a pipe's current capacity in bytes.
+pub const F_GETPIPE_SZ: i32 = 1032;
 /// File-descriptor flag: close the fd on `execve`.
 pub const FD_CLOEXEC: i32 = 1;
 
@@ -462,6 +470,24 @@ mod tests {
         let mut buf = [0u8; 3];
         assert_eq!(read_all(r, &mut buf).expect("read_all"), 3);
         assert_eq!(&buf, b"abc");
+        close(r).expect("close r");
+        close(w).expect("close w");
+    }
+
+    #[test]
+    fn fcntl_pipe_size_get_set() {
+        let (r, w) = pipe2(0).expect("pipe2");
+
+        // Every pipe has a positive default capacity.
+        let default = fcntl(w, F_GETPIPE_SZ, 0).expect("F_GETPIPE_SZ");
+        assert!(default > 0);
+
+        // Growing it returns the (page-rounded) new size, which the next get
+        // reports back. 128 KiB stays under the usual 1 MiB pipe-max-size cap.
+        let set = fcntl(w, F_SETPIPE_SZ, 128 * 1024).expect("F_SETPIPE_SZ");
+        assert!(set >= 128 * 1024);
+        assert_eq!(fcntl(w, F_GETPIPE_SZ, 0).expect("F_GETPIPE_SZ"), set);
+
         close(r).expect("close r");
         close(w).expect("close w");
     }

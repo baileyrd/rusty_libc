@@ -114,12 +114,14 @@ already ships.
 
 ## Nits
 
-- `killpg(0, sig)` relies on `0.wrapping_neg() == 0` so it targets the caller's
-  own group via `kill(0, sig)` — correct, but worth a one-line comment since it
-  reads as an accident.
-- `getrlimit`/`setrlimit` are hardcoded to `pid = 0`. Exposing the `pid`
-  parameter of `prlimit64` (rename to `prlimit(pid, …)`, keep the pid-0
-  convenience wrappers) is a cheap generalization.
-- Consider a `RLIMIT_NLIMITS`/pipe-buffer (`RLIMIT` for the pipe size is a
+> **Status:** all three nits are addressed on this branch.
+
+- *(done)* `killpg(0, sig)` relies on `0.wrapping_neg() == 0` so it targets the
+  caller's own group via `kill(0, sig)` — correct, but worth a one-line comment
+  since it reads as an accident.
+- *(done)* `getrlimit`/`setrlimit` are hardcoded to `pid = 0`. Exposing the `pid`
+  parameter of `prlimit64` (add `prlimit(pid, …)`, keep the pid-0 convenience
+  wrappers) is a cheap generalization.
+- *(done)* Consider a `RLIMIT_NLIMITS`/pipe-buffer (`RLIMIT` for the pipe size is a
   fcntl `F_SETPIPE_SZ`, not an rlimit) note; the DESIGN table lists a "pipe"
   rlimit that has no kernel equivalent.
