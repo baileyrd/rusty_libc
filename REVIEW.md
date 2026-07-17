@@ -40,31 +40,33 @@ already ships.
 
 ## B. Ergonomics and interop
 
-6. **Named `Errno` constants.** Callers and tests currently compare against
+> **Status:** items 6–10 are implemented on this branch.
+
+6. **Named `Errno` constants.** *(done)* Callers and tests currently compare against
    magic numbers (`Errno(9)`, `Errno(22)`, `Errno(25)`, `Errno(10)`). Add
    `EPERM/EINTR/EBADF/EAGAIN/ECHILD/EINVAL/ENOTTY/ENOENT/EACCES/EEXIST/EPIPE/…`
    as `pub const Errno` values (e.g. `impl Errno { pub const EBADF: Errno =
    Errno(9); }`), then rewrite the tests to use them. Makes call-site error
    handling (retry-on-`EINTR`, ignore-`ECHILD`) readable.
 
-7. **`Display` + `core::error::Error` for `Errno`.** `core::error::Error` has
+7. **`Display` + `core::error::Error` for `Errno`.** *(done)* `core::error::Error` has
    been in `core` since Rust 1.81, so a `no_std` crate can implement it. Add a
    `Display` that prints the symbolic name (and, behind an optional `std`
    feature, `From<Errno> for std::io::Error` so consumers get
    `io::Error::from(errno)` directly instead of hand-rolling
    `from_raw_os_error`).
 
-8. **Full `POLL*` flag set + `PollFd` helpers.** Only `POLLIN` is exported. A
+8. **Full `POLL*` flag set + `PollFd` helpers.** *(done)* Only `POLLIN` is exported. A
    shell reading from a pipe needs `POLLHUP` to notice the writer closing, and
    `POLLERR`/`POLLNVAL` to detect broken fds; `POLLOUT`/`POLLPRI` round it out.
    Add them and convenience methods like `PollFd::is_readable()` /
    `is_hup()` on `revents`.
 
-9. **`fcntl` file-status flags.** Doc/behaviour only cover `F_GETFD`/`F_SETFD`.
+9. **`fcntl` file-status flags.** *(done)* Doc/behaviour only cover `F_GETFD`/`F_SETFD`.
    Add `F_GETFL`/`F_SETFL` (+ `O_NONBLOCK`) and `F_DUPFD_CLOEXEC` — toggling
    non-blocking mode and cloexec-preserving dup are common shell needs.
 
-10. **`pipe2`/`dup2` flag constants.** `pipe2(flags)` takes raw flags but the
+10. **`pipe2`/`dup2` flag constants.** *(done)* `pipe2(flags)` takes raw flags but the
     crate exports none, forcing callers to hardcode `0o2000000` for
     `O_CLOEXEC`. Export `O_CLOEXEC`/`O_NONBLOCK` (shared with item 2) so
     `pipe2(O_CLOEXEC)` reads cleanly.

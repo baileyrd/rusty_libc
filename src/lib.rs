@@ -19,9 +19,9 @@
 //! - All struct layouts are the **kernel's**, checked by `const _:`
 //!   size/offset assertions, never copied from glibc headers.
 
-// Build as `no_std` normally, but let the built-in test harness pull in `std`
-// so `cargo test` can run the unit tests.
-#![cfg_attr(not(test), no_std)]
+// Build as `no_std` normally, but let the built-in test harness (and the
+// optional `std` feature, which enables `std`-interop impls) pull in `std`.
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
 // The entire crate is Linux-only; on other targets it compiles to nothing.
 #![cfg(target_os = "linux")]
 // `offset_of!` in const assertions needs a recent compiler; it is stable.

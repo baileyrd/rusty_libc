@@ -12,5 +12,11 @@ keywords = ["syscall", "linux", "no-std", "libc"]
 # No dependencies: this crate exists precisely to avoid the `libc` FFI crate.
 [dependencies]
 
+[features]
+# Opt-in `std` interop: enables `From<Errno> for std::io::Error`. Off by
+# default so the crate stays `no_std`.
+default = []
+std = []
+
 [lints.rust]
 unsafe_op_in_unsafe_fn = "warn"
