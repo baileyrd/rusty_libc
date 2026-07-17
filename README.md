@@ -48,6 +48,15 @@ fn read_hostname() -> Result<(), Errno> {
 }
 ```
 
+## Benchmark
+
+[`bench/`](bench/) is a standalone harness comparing rusty_libc against the
+`libc` crate on the same syscalls (`cd bench && cargo run --release`). It is its
+own workspace and never built by the library's own `cargo` commands, so the
+zero-dependency guarantee holds. Summary: at parity with glibc for genuine
+syscalls, and `clock_gettime` matches glibc's vDSO speed via the fast path in
+[`src/vdso.rs`](src/vdso.rs). See [bench/README.md](bench/README.md).
+
 See [DESIGN.md](DESIGN.md) for the API surface, the hard problems (signal
 restorer trampoline, fork-vs-threads, kernel-vs-glibc layouts), phasing, and
 testing strategy, and [REVIEW.md](REVIEW.md) for the implementation-review log.
