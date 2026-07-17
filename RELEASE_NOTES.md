@@ -13,7 +13,7 @@ Stay up to date with the latest changes to rusty_libc.
 
 ## Inline the hot path — [PR #16](https://github.com/baileyrd/rusty_libc/pull/16)
 
-**July 17, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/97c80c2...826019e)**
+**July 17, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/97c80c2...0fb52f4)**
 
 **Performance**
 - Marked 15 thin convenience wrappers `#[inline]` — `open`, `access`,
