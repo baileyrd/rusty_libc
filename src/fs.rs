@@ -55,6 +55,7 @@ pub fn faccessat(dirfd: i32, path: &CStr, mode: i32) -> Result<(), Errno> {
 }
 
 /// [`faccessat`] against the current working directory ([`AT_FDCWD`]).
+#[inline]
 pub fn access(path: &CStr, mode: i32) -> Result<(), Errno> {
     faccessat(AT_FDCWD, path, mode)
 }
@@ -201,18 +202,21 @@ pub fn statx(dirfd: i32, path: &CStr, flags: i32, mask: u32) -> Result<Statx, Er
 }
 
 /// Metadata for `path`, following symlinks (like `stat(2)`).
+#[inline]
 pub fn stat(path: &CStr) -> Result<Statx, Errno> {
     statx(AT_FDCWD, path, 0, STATX_BASIC_STATS)
 }
 
 /// Metadata for `path` **without** following a terminal symlink (like
 /// `lstat(2)`); [`Statx::is_symlink`] is meaningful here.
+#[inline]
 pub fn lstat(path: &CStr) -> Result<Statx, Errno> {
     statx(AT_FDCWD, path, AT_SYMLINK_NOFOLLOW, STATX_BASIC_STATS)
 }
 
 /// Metadata for an already-open descriptor (like `fstat(2)`), via
 /// [`AT_EMPTY_PATH`].
+#[inline]
 pub fn fstat(fd: i32) -> Result<Statx, Errno> {
     statx(fd, c"", AT_EMPTY_PATH, STATX_BASIC_STATS)
 }
@@ -235,12 +239,14 @@ pub fn unlinkat(dirfd: i32, path: &CStr, flags: i32) -> Result<(), Errno> {
 }
 
 /// Delete the file `path` (relative to the cwd). Shorthand for [`unlinkat`].
+#[inline]
 pub fn unlink(path: &CStr) -> Result<(), Errno> {
     unlinkat(AT_FDCWD, path, 0)
 }
 
 /// Remove the empty directory `path`. Shorthand for [`unlinkat`] with
 /// [`AT_REMOVEDIR`].
+#[inline]
 pub fn rmdir(path: &CStr) -> Result<(), Errno> {
     unlinkat(AT_FDCWD, path, AT_REMOVEDIR)
 }
@@ -262,6 +268,7 @@ pub fn mkdirat(dirfd: i32, path: &CStr, mode: u32) -> Result<(), Errno> {
 
 /// Create the directory `path` (relative to the cwd). Shorthand for
 /// [`mkdirat`].
+#[inline]
 pub fn mkdir(path: &CStr, mode: u32) -> Result<(), Errno> {
     mkdirat(AT_FDCWD, path, mode)
 }
@@ -296,6 +303,7 @@ pub fn renameat2(
 
 /// Rename `old` to `new` (both relative to the cwd). Shorthand for
 /// [`renameat2`] with no flags.
+#[inline]
 pub fn rename(old: &CStr, new: &CStr) -> Result<(), Errno> {
     renameat2(AT_FDCWD, old, AT_FDCWD, new, 0)
 }
@@ -316,6 +324,7 @@ pub fn symlinkat(target: &CStr, newdirfd: i32, linkpath: &CStr) -> Result<(), Er
 }
 
 /// Create the symlink `linkpath` -> `target` (relative to the cwd).
+#[inline]
 pub fn symlink(target: &CStr, linkpath: &CStr) -> Result<(), Errno> {
     symlinkat(target, AT_FDCWD, linkpath)
 }
@@ -344,6 +353,7 @@ pub fn readlinkat<'a>(dirfd: i32, path: &CStr, buf: &'a mut [u8]) -> Result<&'a 
 
 /// Read the target of the symlink `path` (relative to the cwd). Shorthand for
 /// [`readlinkat`].
+#[inline]
 pub fn readlink<'a>(path: &CStr, buf: &'a mut [u8]) -> Result<&'a [u8], Errno> {
     readlinkat(AT_FDCWD, path, buf)
 }
