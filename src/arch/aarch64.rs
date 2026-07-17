@@ -16,10 +16,14 @@ use core::arch::asm;
 
 /// aarch64 syscall numbers used by this crate (from `<asm-generic/unistd.h>`).
 pub mod nr {
+    pub const GETCWD: usize = 17;
     pub const DUP: usize = 23;
     pub const DUP3: usize = 24;
     pub const FCNTL: usize = 25;
     pub const IOCTL: usize = 29;
+    pub const CHDIR: usize = 49;
+    pub const FCHDIR: usize = 50;
+    pub const OPENAT: usize = 56;
     pub const LSEEK: usize = 62;
     pub const WRITE: usize = 64;
     pub const CLOSE: usize = 57;
@@ -28,16 +32,22 @@ pub mod nr {
     pub const PPOLL: usize = 73;
     pub const EXIT_GROUP: usize = 94;
     pub const KILL: usize = 129;
+    pub const RT_SIGPROCMASK: usize = 135;
+    pub const SETPGID: usize = 154;
+    pub const GETPGID: usize = 155;
+    pub const GETSID: usize = 156;
+    pub const SETSID: usize = 157;
     pub const MEMFD_CREATE: usize = 279;
     pub const CLONE: usize = 220;
+    pub const EXECVE: usize = 221;
     pub const RT_SIGACTION: usize = 134;
-    pub const SETPGID: usize = 154;
     pub const UMASK: usize = 166;
     pub const GETPID: usize = 172;
     pub const GETPPID: usize = 173;
     pub const GETUID: usize = 174;
     pub const WAIT4: usize = 260;
     pub const PRLIMIT64: usize = 261;
+    pub const EXECVEAT: usize = 387;
 }
 
 #[inline]

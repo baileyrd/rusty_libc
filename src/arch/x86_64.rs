@@ -12,27 +12,38 @@ use core::arch::asm;
 pub mod nr {
     pub const READ: usize = 0;
     pub const WRITE: usize = 1;
+    pub const OPEN: usize = 2;
     pub const CLOSE: usize = 3;
     pub const POLL: usize = 7;
     pub const LSEEK: usize = 8;
     pub const RT_SIGACTION: usize = 13;
+    pub const RT_SIGPROCMASK: usize = 14;
     pub const RT_SIGRETURN: usize = 15;
     pub const IOCTL: usize = 16;
     pub const DUP: usize = 32;
     pub const DUP2: usize = 33;
     pub const GETPID: usize = 39;
     pub const CLONE: usize = 56;
+    pub const EXECVE: usize = 59;
     pub const KILL: usize = 62;
     pub const MEMFD_CREATE: usize = 319;
     pub const WAIT4: usize = 61;
     pub const FCNTL: usize = 72;
+    pub const GETCWD: usize = 79;
+    pub const CHDIR: usize = 80;
+    pub const FCHDIR: usize = 81;
     pub const UMASK: usize = 95;
     pub const GETUID: usize = 102;
     pub const SETPGID: usize = 109;
     pub const GETPPID: usize = 110;
+    pub const SETSID: usize = 112;
+    pub const GETPGID: usize = 121;
+    pub const GETSID: usize = 124;
+    pub const OPENAT: usize = 257;
     pub const EXIT_GROUP: usize = 231;
     pub const PIPE2: usize = 293;
     pub const PRLIMIT64: usize = 302;
+    pub const EXECVEAT: usize = 322;
 }
 
 #[inline]

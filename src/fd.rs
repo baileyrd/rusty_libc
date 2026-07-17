@@ -5,7 +5,8 @@
 use crate::arch::nr;
 #[cfg(target_arch = "aarch64")]
 use crate::arch::syscall5;
-use crate::arch::{from_ret, from_ret_i32, syscall1, syscall2, syscall3, Errno};
+use crate::arch::{from_ret, from_ret_i32, syscall1, syscall2, syscall3, syscall4, Errno};
+use core::ffi::CStr;
 
 /// `poll(2)` event/return flag: data available to read.
 pub const POLLIN: i16 = 0x001;
@@ -37,6 +38,63 @@ pub const FD_CLOEXEC: i32 = 1;
 pub const O_CLOEXEC: i32 = 0o2000000;
 /// Open/`pipe2`/`fcntl` file-status flag: non-blocking I/O.
 pub const O_NONBLOCK: i32 = 0o0004000;
+
+// `open`/`openat` access modes (mutually exclusive; low two bits).
+/// Open for reading only.
+pub const O_RDONLY: i32 = 0o0;
+/// Open for writing only.
+pub const O_WRONLY: i32 = 0o1;
+/// Open for reading and writing.
+pub const O_RDWR: i32 = 0o2;
+
+// `open`/`openat` creation and status flags (OR into the access mode).
+/// Create the file if it does not exist (uses the `mode` argument).
+pub const O_CREAT: i32 = 0o100;
+/// With [`O_CREAT`], fail with `EEXIST` if the file already exists.
+pub const O_EXCL: i32 = 0o200;
+/// Truncate an existing regular file to length 0 on open.
+pub const O_TRUNC: i32 = 0o1000;
+/// Append: every write goes to the current end of the file.
+pub const O_APPEND: i32 = 0o2000;
+/// Fail with `ENOTDIR` unless the path is a directory.
+pub const O_DIRECTORY: i32 = 0o200000;
+
+/// Special `dirfd` for [`openat`] meaning "resolve relative paths against the
+/// current working directory" — i.e. behave like [`open`].
+pub const AT_FDCWD: i32 = -100;
+
+/// Open the file at `path` relative to the directory referred to by `dirfd`
+/// (or absolute paths regardless of `dirfd`), returning a new descriptor.
+///
+/// `flags` is an access mode ([`O_RDONLY`]/[`O_WRONLY`]/[`O_RDWR`]) ORed with
+/// creation/status flags ([`O_CREAT`], [`O_TRUNC`], [`O_APPEND`],
+/// [`O_CLOEXEC`], …). `mode` is the permission bits for a newly created file
+/// and is ignored unless [`O_CREAT`] is set. Pass [`AT_FDCWD`] for `dirfd` to
+/// resolve `path` against the current working directory.
+pub fn openat(dirfd: i32, path: &CStr, flags: i32, mode: u32) -> Result<i32, Errno> {
+    // SAFETY: `path` is a valid nul-terminated C string the kernel only reads;
+    // `dirfd`/`flags`/`mode` are plain integers.
+    let ret = unsafe {
+        syscall4(
+            nr::OPENAT,
+            dirfd as usize,
+            path.as_ptr() as usize,
+            flags as usize,
+            mode as usize,
+        )
+    };
+    from_ret_i32(ret)
+}
+
+/// Open the file at `path` (resolved against the current working directory for
+/// relative paths), returning a new descriptor. Thin [`openat`] wrapper using
+/// [`AT_FDCWD`]; see it for the `flags`/`mode` conventions.
+///
+/// Implemented over `openat` so it is identical on x86_64 and aarch64 (aarch64
+/// has no legacy `open` syscall).
+pub fn open(path: &CStr, flags: i32, mode: u32) -> Result<i32, Errno> {
+    openat(AT_FDCWD, path, flags, mode)
+}
 
 /// A `poll(2)` request/response entry. Kernel `struct pollfd` layout.
 #[repr(C)]
@@ -363,6 +421,44 @@ mod tests {
     #[test]
     fn close_bad_fd_is_ebadf() {
         assert_eq!(close(-1), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn open_create_write_read_roundtrip() {
+        use std::ffi::CString;
+        let path = format!(
+            "{}/rusty_libc_open_{}.tmp",
+            std::env::temp_dir().display(),
+            std::process::id()
+        );
+        let cpath = CString::new(path.as_str()).unwrap();
+
+        let fd = open(&cpath, O_WRONLY | O_CREAT | O_TRUNC, 0o600).expect("open create");
+        assert_eq!(write(fd, b"hi").expect("write"), 2);
+        close(fd).expect("close");
+
+        let fd = open(&cpath, O_RDONLY, 0).expect("open read");
+        let mut buf = [0u8; 8];
+        let n = read(fd, &mut buf).expect("read");
+        assert_eq!(&buf[..n], b"hi");
+        close(fd).expect("close");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn open_missing_is_enoent() {
+        let cpath = std::ffi::CString::new("/nonexistent/rusty_libc/nope").unwrap();
+        assert_eq!(open(&cpath, O_RDONLY, 0), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn openat_dev_null_is_readable() {
+        // AT_FDCWD with an absolute path behaves exactly like open().
+        let fd = openat(AT_FDCWD, c"/dev/null", O_RDONLY, 0).expect("openat /dev/null");
+        let mut buf = [0u8; 4];
+        assert_eq!(read(fd, &mut buf).expect("read"), 0); // /dev/null is EOF
+        close(fd).expect("close");
     }
 
     #[test]

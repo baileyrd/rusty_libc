@@ -11,7 +11,9 @@ already ships.
 
 ## A. Missing primitives a shell actually needs
 
-1. **`execve` / `execveat` (highest priority).** Phase 4 added a raw `fork`, but
+> **Status:** items 1–5 are implemented on this branch.
+
+1. **`execve` / `execveat` (highest priority).** *(done)* Phase 4 added a raw `fork`, but
    there is no raw `exec`. A raw `fork` with no raw `exec` cannot launch an
    external command — the child can only `exit_group`. Every non-builtin a shell
    runs needs `execve(path, argv, envp)`. This is the single biggest functional
@@ -19,23 +21,23 @@ already ships.
    fd-relative exec), taking nul-terminated C strings and null-terminated
    pointer arrays.
 
-2. **`open` / `openat` + `O_*` flags.** The crate can only obtain fds from
+2. **`open` / `openat` + `O_*` flags.** *(done)* The crate can only obtain fds from
    `pipe2` and `memfd_create`. File redirections (`>`, `>>`, `<`, `2>`,
    `2>&1`) require opening real files. Add `openat(AT_FDCWD, path, flags, mode)`
    with the `O_RDONLY/O_WRONLY/O_RDWR/O_CREAT/O_APPEND/O_TRUNC/O_CLOEXEC/
    O_NONBLOCK` constants.
 
-3. **`rt_sigprocmask` (block / unblock / setmask).** A job-control shell must
+3. **`rt_sigprocmask` (block / unblock / setmask).** *(done)* A job-control shell must
    block `SIGCHLD` (and often `SIGINT`/`SIGTSTP`) around critical sections —
    e.g. between forking and recording the child in the job table — then unblock.
    Today only `signal()` (disposition) is exposed; there is no way to mask.
    Add `sigprocmask(how, &new, Option<&mut old>)` over `rt_sigprocmask` with
    `sigsetsize = 8` and `SIG_BLOCK/SIG_UNBLOCK/SIG_SETMASK`.
 
-4. **`chdir` / `fchdir` / `getcwd`.** The `cd` builtin and `$PWD` tracking need
+4. **`chdir` / `fchdir` / `getcwd`.** *(done)* The `cd` builtin and `$PWD` tracking need
    these; none are present.
 
-5. **Session / process-group control: `setsid`, `getpgid`, `getsid`.** Job
+5. **Session / process-group control: `setsid`, `getpgid`, `getsid`.** *(done)* Job
    control and daemonizing need `setsid`; `setpgid` alone is not enough.
 
 ## B. Ergonomics and interop
