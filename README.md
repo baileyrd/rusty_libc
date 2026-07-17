@@ -51,14 +51,17 @@ fn read_hostname() -> Result<(), Errno> {
 ## Benchmark
 
 [`bench/`](bench/) is a standalone harness comparing rusty_libc against the
-`libc` crate on the same syscalls (`cd bench && cargo run --release`). It is its
-own workspace and never built by the library's own `cargo` commands, so the
-zero-dependency guarantee holds. Summary: at parity with glibc for genuine
-syscalls, and `clock_gettime` matches glibc's vDSO speed via the fast path in
-[`src/vdso.rs`](src/vdso.rs). See [bench/README.md](bench/README.md).
+`libc` crate on the same syscalls — both **glibc** (default) and **musl**
+(`cargo run --release --target x86_64-unknown-linux-musl`, or `./run.sh` for
+both). It is its own workspace and never built by the library's own `cargo`
+commands, so the zero-dependency guarantee holds. Summary: at parity with
+both libcs for genuine syscalls, and `clock_gettime` matches their vDSO speed
+via the fast path in [`src/vdso.rs`](src/vdso.rs), with `*_COARSE` clocks
+faster still. See [bench/README.md](bench/README.md).
 
 See [DESIGN.md](DESIGN.md) for the API surface, the hard problems (signal
 restorer trampoline, fork-vs-threads, kernel-vs-glibc layouts), phasing, and
-testing strategy, and [REVIEW.md](REVIEW.md) for the implementation-review log.
-The dependency analysis that motivates the crate lives in rush's
+testing strategy; [REVIEW.md](REVIEW.md) for the implementation-review log;
+and [RELEASE_NOTES.md](RELEASE_NOTES.md) for a changelog of what shipped and
+when. The dependency analysis that motivates the crate lives in rush's
 `docs/LIBC_DEPENDENCY_ANALYSIS.md`.

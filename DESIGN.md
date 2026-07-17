@@ -5,6 +5,19 @@ the `libc` FFI-bindings crate for [rush](https://github.com/baileyrd/rush),
 issuing raw syscalls via inline asm instead of linking prototypes against
 glibc.
 
+> **Status:** this document captures the *original* requirements and phasing
+> that kicked off the crate; all five phases below are complete, and several
+> rounds of implementation review since have gone well past the original
+> ~25-syscall/~100-symbol scope (raw `execve`, `fs`/`time` modules, `waitid`,
+> a vDSO fast path for `clock_gettime`, …). See [RELEASE_NOTES.md](RELEASE_NOTES.md)
+> for the full history and [REVIEW.md](REVIEW.md) for the review log. It is
+> kept as-is below for the rationale, not as a live status page — in
+> particular, the "`fork` stays on glibc" ground rule was the original,
+> deliberately cautious starting position; Phase 4 implemented a raw `fork`
+> and a later round added raw `execve`, both with the safety caveats spelled
+> out in their own doc comments (`process::fork`'s safety note is the current
+> word on when it's safe to call).
+
 Scope and rationale are established in rush's
 `docs/LIBC_DEPENDENCY_ANALYSIS.md` (same-named branch there). Summary of the
 ground rules that fall out of that analysis:
