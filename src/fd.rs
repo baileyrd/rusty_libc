@@ -57,7 +57,15 @@ pub const O_TRUNC: i32 = 0o1000;
 /// Append: every write goes to the current end of the file.
 pub const O_APPEND: i32 = 0o2000;
 /// Fail with `ENOTDIR` unless the path is a directory.
+///
+/// This flag is one of the few `O_*` values that differ by architecture:
+/// `0o200000` on x86_64 but `0o40000` on aarch64 (where `0o200000` is
+/// `O_DIRECT`), so it is defined per-arch.
+#[cfg(target_arch = "x86_64")]
 pub const O_DIRECTORY: i32 = 0o200000;
+/// Fail with `ENOTDIR` unless the path is a directory (aarch64 value).
+#[cfg(target_arch = "aarch64")]
+pub const O_DIRECTORY: i32 = 0o40000;
 
 /// Special `dirfd` for [`openat`] meaning "resolve relative paths against the
 /// current working directory" — i.e. behave like [`open`].
