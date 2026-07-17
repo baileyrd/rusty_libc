@@ -19,6 +19,8 @@ const TCGETS: usize = 0x5401;
 const TCSETS: usize = 0x5402; // TCSANOW: set immediately.
 const TCSETSW: usize = 0x5403; // TCSADRAIN: drain output, then set.
 const TCSETSF: usize = 0x5404; // TCSAFLUSH: drain output, flush input, then set.
+const TCSBRK: usize = 0x5409; // with arg != 0, wait for output to drain (tcdrain).
+const TCFLSH: usize = 0x540b; // flush input and/or output queues (tcflush).
 const TIOCGPGRP: usize = 0x540f;
 const TIOCSPGRP: usize = 0x5410;
 
@@ -30,6 +32,13 @@ pub const TCSADRAIN: i32 = 1;
 /// [`tcsetattr_with`] action: drain pending output and discard pending input,
 /// then apply. The usual choice when restoring the terminal on exit.
 pub const TCSAFLUSH: i32 = 2;
+
+/// [`tcflush`] queue selector: discard unread input.
+pub const TCIFLUSH: i32 = 0;
+/// [`tcflush`] queue selector: discard unwritten output.
+pub const TCOFLUSH: i32 = 1;
+/// [`tcflush`] queue selector: discard both input and output.
+pub const TCIOFLUSH: i32 = 2;
 
 // Input flags (`c_iflag`).
 /// Ignore BREAK conditions on input.
@@ -73,11 +82,41 @@ pub const ECHONL: u32 = 0o0000100;
 /// Enable implementation-defined input processing.
 pub const IEXTEN: u32 = 0o0100000;
 
-// Indices into `c_cc`.
-/// `c_cc` index: minimum bytes for a non-canonical read.
-pub const VMIN: usize = 6;
+// Indices into `c_cc` (asm-generic / x86_64 / aarch64 ordering).
+/// `c_cc` index: INTR character (sends `SIGINT`, typically Ctrl-C).
+pub const VINTR: usize = 0;
+/// `c_cc` index: QUIT character (sends `SIGQUIT`, typically Ctrl-\).
+pub const VQUIT: usize = 1;
+/// `c_cc` index: ERASE character (erase last char, typically Backspace).
+pub const VERASE: usize = 2;
+/// `c_cc` index: KILL character (erase current line).
+pub const VKILL: usize = 3;
+/// `c_cc` index: EOF character (typically Ctrl-D).
+pub const VEOF: usize = 4;
 /// `c_cc` index: read timeout (tenths of a second) for non-canonical reads.
 pub const VTIME: usize = 5;
+/// `c_cc` index: minimum bytes for a non-canonical read.
+pub const VMIN: usize = 6;
+/// `c_cc` index: SWTC character (switch, rarely used).
+pub const VSWTC: usize = 7;
+/// `c_cc` index: START character (resume output, typically Ctrl-Q).
+pub const VSTART: usize = 8;
+/// `c_cc` index: STOP character (pause output, typically Ctrl-S).
+pub const VSTOP: usize = 9;
+/// `c_cc` index: SUSP character (sends `SIGTSTP`, typically Ctrl-Z).
+pub const VSUSP: usize = 10;
+/// `c_cc` index: EOL character (additional line terminator).
+pub const VEOL: usize = 11;
+/// `c_cc` index: REPRINT character (redraw the line, typically Ctrl-R).
+pub const VREPRINT: usize = 12;
+/// `c_cc` index: DISCARD character (toggle output discard, typically Ctrl-O).
+pub const VDISCARD: usize = 13;
+/// `c_cc` index: WERASE character (erase last word, typically Ctrl-W).
+pub const VWERASE: usize = 14;
+/// `c_cc` index: LNEXT character (quote the next char literally, typically Ctrl-V).
+pub const VLNEXT: usize = 15;
+/// `c_cc` index: EOL2 character (a second additional line terminator).
+pub const VEOL2: usize = 16;
 
 /// Kernel `struct termios`. Field order and sizes match `<asm/termbits.h>`.
 #[repr(C)]
@@ -168,6 +207,24 @@ pub fn tcsetattr_with(fd: i32, actions: i32, termios: &Termios) -> Result<(), Er
     // SAFETY: each request expects a `*const termios`; `termios` is a valid
     // borrow the kernel only reads.
     unsafe { ioctl(fd, request, termios as *const Termios as usize) }?;
+    Ok(())
+}
+
+/// Discard queued terminal data on `fd`: `queue` is [`TCIFLUSH`] (unread
+/// input), [`TCOFLUSH`] (unwritten output), or [`TCIOFLUSH`] (both). A line
+/// editor calls `tcflush(fd, TCIFLUSH)` to drop type-ahead after an interrupt.
+pub fn tcflush(fd: i32, queue: i32) -> Result<(), Errno> {
+    // TCFLSH takes the queue selector as an integer arg, not a pointer.
+    // SAFETY: integer request; no memory is dereferenced.
+    unsafe { ioctl(fd, TCFLSH, queue as usize) }?;
+    Ok(())
+}
+
+/// Block until all output written to `fd` has been transmitted (`tcdrain`).
+pub fn tcdrain(fd: i32) -> Result<(), Errno> {
+    // tcdrain is TCSBRK with a non-zero argument (0 would send a BREAK).
+    // SAFETY: integer request; no memory is dereferenced.
+    unsafe { ioctl(fd, TCSBRK, 1) }?;
     Ok(())
 }
 
@@ -334,6 +391,17 @@ mod tests {
         let restored = tcgetattr(sfd).expect("tcgetattr restored");
         assert_ne!(restored.c_lflag & ICANON, 0);
         assert_ne!(restored.c_lflag & ECHO, 0);
+    }
+
+    #[test]
+    fn tcflush_and_tcdrain_on_pty() {
+        use std::os::fd::AsRawFd;
+        let (_m, s) = open_pty();
+        let sfd = s.as_raw_fd();
+        // Both are valid terminal operations on a pty slave.
+        tcflush(sfd, TCIFLUSH).expect("tcflush input");
+        tcflush(sfd, TCIOFLUSH).expect("tcflush both");
+        tcdrain(sfd).expect("tcdrain");
     }
 
     #[test]

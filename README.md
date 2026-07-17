@@ -1,9 +1,55 @@
 # rusty_libc
 
-A planned `#![no_std]`, zero-dependency, Linux-only raw-syscall crate to
-replace the `libc` FFI-bindings crate in [rush](https://github.com/baileyrd/rush).
+A `#![no_std]`, zero-dependency, Linux-only raw-syscall crate that replaces the
+`libc` FFI-bindings crate in [rush](https://github.com/baileyrd/rush). It issues
+syscalls via inline asm instead of linking prototypes against glibc, and models
+every struct with the **kernel's** layout (checked by `const` size/offset
+assertions), not glibc's.
 
-See [DESIGN.md](DESIGN.md) for the required API surface, hard problems
-(signal restorer trampoline, fork-vs-threads, kernel-vs-glibc struct
-layouts), phasing, and testing strategy. The full dependency analysis that
-motivates this lives in rush's `docs/LIBC_DEPENDENCY_ANALYSIS.md`.
+- **Targets:** `x86_64` and `aarch64` Linux (a per-arch syscall table each).
+- **No dependencies.** Safe wrappers return `Result<T, Errno>`; a raw `-errno`
+  never escapes the crate.
+- **Optional `std` feature** adds `From<Errno> for std::io::Error` for callers
+  that work in `std::io::Result`.
+- **MSRV 1.88** (the crate uses naked functions for the x86_64 signal-return
+  trampoline).
+
+## Coverage
+
+| Module | What it provides |
+|---|---|
+| `arch` | `syscall0`..`syscall6`, the `Errno` newtype (named constants, `Display`, `Error`), and `-errno` decoding |
+| `fd` | `read`/`write`(`_all`), `open`/`openat`, `poll`, `pipe2`, `dup`/`dup2`/`dup3`, `close`, `fcntl`, `memfd_create`, `lseek`; `O_*`/`F_*`/`POLL*` constants |
+| `fs` | `statx`/`stat`/`lstat`/`fstat`, `faccessat`/`access`, `unlinkat`/`mkdirat`/`renameat2`/`symlinkat`/`readlinkat` (+ `unlink`/`mkdir`/`rename`/… shorthands) |
+| `process` | pids/uids/gids (real & effective), `setpgid`/`setsid`/`getpgid`/`getsid`, `kill`/`killpg`, `chdir`/`fchdir`/`getcwd`, `exit_group`, raw `fork`, `execve`/`execveat` |
+| `signal` | `signal`/`sigaction` (+ `SA_*`), `sigprocmask`/`sigpending`/`sigsuspend`, the x86_64 `SA_RESTORER` trampoline, `SIG*` constants |
+| `wait` | `waitpid` (via `wait4`) and the `W*` status decoders |
+| `termios` | kernel `Termios`, `tcgetattr`/`tcsetattr`(`_with`), `make_raw`, `tcflush`/`tcdrain`, tty pgrp queries, `isatty`, full `c_cc`/flag constants |
+| `tty` | `Winsize` window-size query |
+| `rlimit` | `prlimit`/`getrlimit`/`setrlimit`, `RLIMIT_*` |
+| `time` | `Timespec`, `clock_gettime`, `nanosleep` |
+| `umask` | `umask` |
+
+## Example
+
+```rust
+use rusty_libc::{fd, fs, Errno};
+
+fn read_hostname() -> Result<(), Errno> {
+    // Test a PATH candidate the way a shell does, then read a file.
+    if fs::access(c"/bin/sh", fs::X_OK).is_ok() {
+        let f = fd::open(c"/etc/hostname", fd::O_RDONLY, 0)?;
+        let mut buf = [0u8; 256];
+        let n = fd::read_all(f, &mut buf)?;
+        fd::close(f)?;
+        let _ = &buf[..n];
+    }
+    Ok(())
+}
+```
+
+See [DESIGN.md](DESIGN.md) for the API surface, the hard problems (signal
+restorer trampoline, fork-vs-threads, kernel-vs-glibc layouts), phasing, and
+testing strategy, and [REVIEW.md](REVIEW.md) for the implementation-review log.
+The dependency analysis that motivates the crate lives in rush's
+`docs/LIBC_DEPENDENCY_ANALYSIS.md`.

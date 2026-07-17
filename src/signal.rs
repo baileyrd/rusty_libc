@@ -20,7 +20,7 @@
 //! trampoline, so `SA_RESTORER` is neither set nor required there.
 
 use crate::arch::nr;
-use crate::arch::{from_ret, syscall4, Errno};
+use crate::arch::{from_ret, syscall2, syscall4, Errno};
 
 /// A signal handler: [`SIG_DFL`], [`SIG_IGN`], or a function pointer
 /// (`extern "C" fn(i32)` cast to `usize`). Modelled as `usize` to match
@@ -96,8 +96,21 @@ pub const SIGPWR: i32 = 30;
 /// Bad system call.
 pub const SIGSYS: i32 = 31;
 
+/// `sa_flags`: for `SIGCHLD`, do not receive it when children merely stop or
+/// continue (only on death). Job-control shells that reap stops via `wait` set
+/// this to avoid duplicate notifications.
+pub const SA_NOCLDSTOP: u64 = 0x0000_0001;
+/// `sa_flags`: for `SIGCHLD`, do not turn terminated children into zombies.
+pub const SA_NOCLDWAIT: u64 = 0x0000_0002;
+/// `sa_flags`: deliver a three-argument `sigaction`-style handler (the handler
+/// must have the matching `siginfo` signature).
+pub const SA_SIGINFO: u64 = 0x0000_0004;
 /// `sa_flags`: resume slow syscalls instead of failing with `EINTR`.
-const SA_RESTART: u64 = 0x1000_0000;
+pub const SA_RESTART: u64 = 0x1000_0000;
+/// `sa_flags`: do not block the signal within its own handler.
+pub const SA_NODEFER: u64 = 0x4000_0000;
+/// `sa_flags`: reset the disposition to the default on the first delivery.
+pub const SA_RESETHAND: u64 = 0x8000_0000;
 /// `sa_flags`: `sa_restorer` is valid and should be used (x86_64 requires it;
 /// aarch64 has no restorer and never sets this).
 #[cfg(target_arch = "x86_64")]
@@ -180,27 +193,21 @@ pub fn sigprocmask(how: i32, set: u64) -> Result<u64, Errno> {
     Ok(old)
 }
 
-/// Install `handler` for signal `sig`, returning the previous handler.
-///
-/// The handler is persistent and installed with `SA_RESTART` (glibc BSD
-/// `signal(3)` semantics). `handler` is [`SIG_DFL`], [`SIG_IGN`], or an
-/// `extern "C" fn(i32)` cast to `usize`.
+/// Shared `rt_sigaction` installer. `flags` is the caller's `SA_*` set; the
+/// x86_64 restorer bits are always ORed in here (mandatory on that arch).
 ///
 /// # Safety
-/// Installing an arbitrary handler is inherently unsafe: the handler runs
-/// asynchronously in signal context, where only async-signal-safe operations
-/// are permitted, and `handler` (when not a sentinel) must be a valid
-/// `extern "C" fn(i32)` pointer that lives at least until it is replaced.
-pub unsafe fn signal(sig: i32, handler: Sighandler) -> Result<Sighandler, Errno> {
+/// Same contract as [`signal`]/[`sigaction`] on `handler`.
+unsafe fn install(sig: i32, handler: Sighandler, flags: u64) -> Result<Sighandler, Errno> {
     // x86_64 must supply a restorer via SA_RESTORER; aarch64's kernel provides
     // one through the vDSO, so it sets neither the flag nor sa_restorer.
     #[cfg(target_arch = "x86_64")]
     let (sa_flags, sa_restorer) = (
-        SA_RESTART | SA_RESTORER,
+        flags | SA_RESTORER,
         sigreturn_trampoline as *const () as usize,
     );
     #[cfg(target_arch = "aarch64")]
-    let (sa_flags, sa_restorer) = (SA_RESTART, 0usize);
+    let (sa_flags, sa_restorer) = (flags, 0usize);
 
     let new = KernelSigaction {
         sa_handler: handler,
@@ -228,6 +235,69 @@ pub unsafe fn signal(sig: i32, handler: Sighandler) -> Result<Sighandler, Errno>
     };
     from_ret(ret)?;
     Ok(old.sa_handler)
+}
+
+/// Install `handler` for signal `sig`, returning the previous handler.
+///
+/// The handler is persistent and installed with [`SA_RESTART`] (glibc BSD
+/// `signal(3)` semantics), so slow syscalls resume rather than failing with
+/// `EINTR`. `handler` is [`SIG_DFL`], [`SIG_IGN`], or an `extern "C" fn(i32)`
+/// cast to `usize`. For control over the flags (e.g. [`SA_NOCLDSTOP`], or
+/// omitting `SA_RESTART`), use [`sigaction`].
+///
+/// # Safety
+/// Installing an arbitrary handler is inherently unsafe: the handler runs
+/// asynchronously in signal context, where only async-signal-safe operations
+/// are permitted, and `handler` (when not a sentinel) must be a valid
+/// `extern "C" fn(i32)` pointer that lives at least until it is replaced.
+pub unsafe fn signal(sig: i32, handler: Sighandler) -> Result<Sighandler, Errno> {
+    // SAFETY: forwarded to the caller's `handler` contract.
+    unsafe { install(sig, handler, SA_RESTART) }
+}
+
+/// Install `handler` for signal `sig` with an explicit `flags` set (an OR of
+/// `SA_*` constants), returning the previous handler.
+///
+/// This is [`signal`] without the hardcoded [`SA_RESTART`]: pass `SA_RESTART`
+/// yourself if you want restarting, or omit it so a blocked syscall breaks with
+/// `EINTR` (e.g. a `SIGINT` handler that must interrupt a blocking `read`). The
+/// x86_64 return trampoline is still installed automatically. `SA_SIGINFO` is
+/// accepted but the caller is then responsible for providing a handler with the
+/// three-argument signature.
+///
+/// # Safety
+/// Same contract as [`signal`].
+pub unsafe fn sigaction(sig: i32, handler: Sighandler, flags: u64) -> Result<Sighandler, Errno> {
+    // SAFETY: forwarded to the caller's `handler` contract.
+    unsafe { install(sig, handler, flags) }
+}
+
+/// Return the set of signals that are pending (raised while blocked) for the
+/// calling thread, as a mask of [`sigmask`] bits.
+pub fn sigpending() -> Result<u64, Errno> {
+    let mut set: u64 = 0;
+    // rt_sigpending(&mut set, sigsetsize).
+    // SAFETY: `set` is a valid 8-byte kernel sigset the kernel writes.
+    let ret = unsafe { syscall2(nr::RT_SIGPENDING, &mut set as *mut u64 as usize, SIGSETSIZE) };
+    from_ret(ret)?;
+    Ok(set)
+}
+
+/// Atomically replace the thread's signal mask with `mask` and wait until a
+/// signal is delivered, then restore the previous mask. Always returns
+/// `EINTR` (the only way it returns).
+///
+/// The race-free "wait for a signal" primitive: block `SIGCHLD` with
+/// [`sigprocmask`], check your job state, then `sigsuspend` with `SIGCHLD`
+/// unblocked so a `SIGCHLD` arriving in between is not lost.
+pub fn sigsuspend(mask: u64) -> Errno {
+    // rt_sigsuspend(&mask, sigsetsize) — returns -EINTR on success.
+    // SAFETY: `mask` is a valid 8-byte kernel sigset the kernel only reads.
+    let ret = unsafe { syscall2(nr::RT_SIGSUSPEND, &mask as *const u64 as usize, SIGSETSIZE) };
+    match from_ret(ret) {
+        Ok(_) => Errno(0),
+        Err(e) => e,
+    }
 }
 
 #[cfg(test)]
@@ -327,5 +397,40 @@ mod tests {
         sigprocmask(SIG_SETMASK, old_mask).expect("restore mask");
         assert_eq!(COUNT.load(Ordering::SeqCst), 1);
         unsafe { signal(SIGUSR1, prev) }.expect("restore SIGUSR1 after mask");
+
+        // --- sigpending: a blocked, raised signal shows up as pending. ---
+        let prev = unsafe { signal(SIGUSR1, counting_handler as *const () as usize) }
+            .expect("install for pending");
+        let old_mask = sigprocmask(SIG_BLOCK, sigmask(SIGUSR1)).expect("block SIGUSR1");
+        assert_eq!(sigpending().expect("sigpending") & sigmask(SIGUSR1), 0);
+        tgkill(pid, tid, SIGUSR1);
+        assert_ne!(sigpending().expect("sigpending") & sigmask(SIGUSR1), 0);
+
+        // --- sigsuspend: unblock SIGUSR1 only for the wait; the already-pending
+        // signal is delivered immediately and sigsuspend returns EINTR. ---
+        COUNT.store(0, Ordering::SeqCst);
+        // Suspend with an empty mask (nothing blocked) so the pending SIGUSR1
+        // fires at once.
+        assert_eq!(sigsuspend(0), Errno::EINTR);
+        assert_eq!(COUNT.load(Ordering::SeqCst), 1);
+        // sigsuspend restored the pre-call mask (SIGUSR1 still blocked); clean up.
+        sigprocmask(SIG_SETMASK, old_mask).expect("restore mask after suspend");
+        unsafe { signal(SIGUSR1, prev) }.expect("restore SIGUSR1 after pending");
+
+        // --- sigaction: install without SA_RESTART and confirm delivery still
+        // works (behavioural parity with signal(); the flag only affects
+        // syscall restart, not delivery). ---
+        COUNT.store(0, Ordering::SeqCst);
+        let prev = unsafe {
+            sigaction(
+                SIGUSR1,
+                counting_handler as *const () as usize,
+                SA_NOCLDSTOP,
+            )
+        }
+        .expect("sigaction install");
+        tgkill(pid, tid, SIGUSR1);
+        assert_eq!(COUNT.load(Ordering::SeqCst), 1);
+        unsafe { signal(SIGUSR1, prev) }.expect("restore SIGUSR1 after sigaction");
     }
 }

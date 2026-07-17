@@ -317,6 +317,19 @@ pub fn dup2(oldfd: i32, newfd: i32) -> Result<i32, Errno> {
     from_ret_i32(ret)
 }
 
+/// Duplicate `oldfd` onto `newfd` with `flags` (typically [`O_CLOEXEC`] or
+/// `0`), closing `newfd` first if open. Returns `newfd`.
+///
+/// Unlike [`dup2`], this sets close-on-exec **atomically** when [`O_CLOEXEC`]
+/// is passed — the way a shell wires up a redirection whose fd must not leak
+/// past the child's `exec`. `oldfd == newfd` is rejected with `EINVAL` (that is
+/// the raw `dup3` behaviour; use [`dup2`] if you need the no-op-on-equal case).
+pub fn dup3(oldfd: i32, newfd: i32, flags: i32) -> Result<i32, Errno> {
+    // SAFETY: plain integer arguments.
+    let ret = unsafe { syscall3(nr::DUP3, oldfd as usize, newfd as usize, flags as usize) };
+    from_ret_i32(ret)
+}
+
 /// Close `fd`.
 pub fn close(fd: i32) -> Result<(), Errno> {
     // SAFETY: plain integer argument.
@@ -506,6 +519,25 @@ mod tests {
         assert_eq!(flags & FD_CLOEXEC, FD_CLOEXEC);
 
         for fd in [r, w, d] {
+            close(fd).expect("close");
+        }
+    }
+
+    #[test]
+    fn dup3_sets_cloexec_atomically() {
+        let (r, w) = pipe2(0).expect("pipe2");
+        // Duplicate r onto a high, unused fd with O_CLOEXEC in one step.
+        let target = 20;
+        let got = dup3(r, target, O_CLOEXEC).expect("dup3");
+        assert_eq!(got, target);
+        assert_eq!(
+            fcntl(target, F_GETFD, 0).expect("F_GETFD") & FD_CLOEXEC,
+            FD_CLOEXEC
+        );
+        // dup3 rejects oldfd == newfd (unlike dup2).
+        assert_eq!(dup3(r, r, 0), Err(Errno::EINVAL));
+
+        for fd in [r, w, target] {
             close(fd).expect("close");
         }
     }
