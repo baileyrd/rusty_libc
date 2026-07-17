@@ -46,6 +46,9 @@ pub fn kill(pid: i32, sig: i32) -> Result<(), Errno> {
 ///
 /// Equivalent to `kill(-pgrp, sig)`; `pgrp == 0` targets the caller's group.
 pub fn killpg(pgrp: i32, sig: i32) -> Result<(), Errno> {
+    // `kill` reads a negative pid as "process group -pid". Negating maps `pgrp`
+    // to that form; `0.wrapping_neg() == 0`, and `kill(0, sig)` already means
+    // "the caller's own group", so the `pgrp == 0` case falls out correctly.
     kill(pgrp.wrapping_neg(), sig)
 }
 
