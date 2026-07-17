@@ -38,8 +38,16 @@ const FAILED: usize = 1;
 /// The resolved vDSO `clock_gettime`, or `None` if this process has no usable
 /// vDSO entry. Resolution is attempted once and cached; racing threads compute
 /// the same pointer, so the unsynchronized retry is harmless.
+///
+/// `Relaxed` is sufficient on both the load and the store: the cached value is
+/// a fixed vDSO code address the kernel already mapped and made executable
+/// before this process ran any code, not a pointer to data this thread wrote
+/// and needs to publish — there is nothing for an `Acquire`/`Release` pair to
+/// synchronize here. Skipping the fence keeps every call on the hot path (this
+/// is called on every [`crate::time::clock_gettime`]) a plain load.
+#[inline]
 pub(crate) fn clock_gettime_fn() -> Option<ClockGettimeFn> {
-    let cached = CACHE.load(Ordering::Acquire);
+    let cached = CACHE.load(Ordering::Relaxed);
     if cached == FAILED {
         return None;
     }
@@ -49,7 +57,7 @@ pub(crate) fn clock_gettime_fn() -> Option<ClockGettimeFn> {
         return Some(unsafe { core::mem::transmute::<usize, ClockGettimeFn>(cached) });
     }
     let resolved = resolve();
-    CACHE.store(resolved.map_or(FAILED, |f| f as usize), Ordering::Release);
+    CACHE.store(resolved.map_or(FAILED, |f| f as usize), Ordering::Relaxed);
     resolved
 }
 

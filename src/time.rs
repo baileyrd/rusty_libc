@@ -20,6 +20,20 @@ pub const CLOCK_REALTIME: i32 = 0;
 /// Monotonic time since an unspecified start; never jumps backward. The right
 /// clock for measuring elapsed intervals (timeouts, `time`-ing a command).
 pub const CLOCK_MONOTONIC: i32 = 1;
+/// Monotonic time that also advances while the system is suspended (unlike
+/// [`CLOCK_MONOTONIC`]).
+pub const CLOCK_BOOTTIME: i32 = 7;
+/// A faster, lower-resolution [`CLOCK_REALTIME`]: on the vDSO fast path this
+/// skips the fine-grained interpolation step, at the cost of coarser precision
+/// (typically 1–4 ms, one kernel timer tick). Good for a prompt timestamp or
+/// any read where sub-millisecond accuracy is not needed — it is roughly 2–3x
+/// faster than the precise clock (see `bench/`).
+pub const CLOCK_REALTIME_COARSE: i32 = 5;
+/// A faster, lower-resolution [`CLOCK_MONOTONIC`]; see [`CLOCK_REALTIME_COARSE`]
+/// for the precision/speed trade-off. The right choice for `$SECONDS`-style
+/// counters, throttling, or any hot-path timestamp that only needs
+/// millisecond-ish accuracy.
+pub const CLOCK_MONOTONIC_COARSE: i32 = 6;
 
 impl Timespec {
     /// Construct from a whole number of milliseconds.
@@ -37,32 +51,39 @@ impl Timespec {
 /// When the process vDSO exports a usable `clock_gettime`, this reads the clock
 /// entirely in userspace (no syscall trap), matching glibc's speed; otherwise
 /// it falls back to the raw syscall. The result is identical either way.
+#[inline]
 pub fn clock_gettime(clockid: i32) -> Result<Timespec, Errno> {
-    let mut ts = Timespec::default();
+    // Fast path: the vDSO reads the clock without entering the kernel. Left
+    // uninitialized until written: both the vDSO entry and the syscall below
+    // fill it completely on success, and neither path reads it first.
+    let mut ts = core::mem::MaybeUninit::<Timespec>::uninit();
 
-    // Fast path: the vDSO reads the clock without entering the kernel. A
-    // non-zero return means the vDSO declined (e.g. an unsupported clock), so
-    // we fall through to the syscall, which reproduces success or the error.
+    // A non-zero return means the vDSO declined (e.g. an unsupported clock),
+    // so we fall through to the syscall, which reproduces success or the error.
     if let Some(f) = crate::vdso::clock_gettime_fn() {
         // SAFETY: `f` is the resolved vDSO entry with exactly this ABI; `ts` is
-        // a valid, exclusively-borrowed `timespec` it writes on success.
-        if unsafe { f(clockid, &mut ts as *mut Timespec) } == 0 {
-            return Ok(ts);
+        // a valid, exclusively-borrowed, suitably-sized-and-aligned
+        // `timespec` it writes on success.
+        if unsafe { f(clockid, ts.as_mut_ptr()) } == 0 {
+            // SAFETY: a zero return means the vDSO fully initialized `ts`.
+            return Ok(unsafe { ts.assume_init() });
         }
     }
 
     // clock_gettime(clockid, &mut ts).
-    // SAFETY: `ts` is a valid, exclusively-borrowed `struct timespec` the
-    // kernel writes.
+    // SAFETY: `ts` is a valid, exclusively-borrowed, suitably-sized-and-aligned
+    // `struct timespec`; the kernel writes it completely on success and this
+    // crate's `no_std` syscall path never reads it before checking `from_ret`.
     let ret = unsafe {
         syscall2(
             nr::CLOCK_GETTIME,
             clockid as usize,
-            &mut ts as *mut Timespec as usize,
+            ts.as_mut_ptr() as usize,
         )
     };
     from_ret(ret)?;
-    Ok(ts)
+    // SAFETY: `from_ret` returned `Ok`, so the kernel fully initialized `ts`.
+    Ok(unsafe { ts.assume_init() })
 }
 
 /// Suspend execution for at least the interval `req`.
@@ -100,6 +121,24 @@ mod tests {
         // Sanity: the realtime clock is past 2020-01-01 (1_577_836_800).
         let now = clock_gettime(CLOCK_REALTIME).expect("clock_gettime");
         assert!(now.tv_sec > 1_577_836_800);
+    }
+
+    #[test]
+    fn coarse_and_boottime_clocks_work() {
+        // Coarse clocks trade resolution for speed but report the same epoch.
+        let realtime_coarse = clock_gettime(CLOCK_REALTIME_COARSE).expect("clock_gettime");
+        assert!(realtime_coarse.tv_sec > 1_577_836_800);
+
+        // Coarse monotonic must also advance, like the precise clock.
+        let a = clock_gettime(CLOCK_MONOTONIC_COARSE).expect("clock_gettime");
+        nanosleep(&Timespec::from_millis(20), None).expect("nanosleep");
+        let b = clock_gettime(CLOCK_MONOTONIC_COARSE).expect("clock_gettime");
+        let delta_ns = (b.tv_sec - a.tv_sec) * 1_000_000_000 + (b.tv_nsec - a.tv_nsec);
+        assert!(delta_ns > 0, "coarse monotonic clock did not advance");
+
+        // BOOTTIME tracks MONOTONIC closely absent a suspend/resume in between.
+        let boot = clock_gettime(CLOCK_BOOTTIME).expect("clock_gettime");
+        assert!(boot.tv_sec > 0);
     }
 
     // Read CLOCK_MONOTONIC directly via the syscall, bypassing the vDSO.

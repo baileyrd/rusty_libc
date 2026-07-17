@@ -10,11 +10,13 @@
 //!
 //! or `./run.sh` for both.
 //!
-//! The interesting row is `clock_gettime`: both libcs serve it from the vDSO in
-//! userspace, and `rusty_libc` does too (its vDSO fast path), so all avoid the
-//! syscall trap. Every other operation is a genuine syscall on both sides, so
-//! the numbers should be at parity — the point being that replacing the `libc`
-//! crate costs nothing at runtime.
+//! The interesting rows are the `clock_gettime` ones: both libcs serve
+//! `CLOCK_MONOTONIC` from the vDSO in userspace, and `rusty_libc` does too (its
+//! vDSO fast path), so all avoid the syscall trap; `CLOCK_MONOTONIC_COARSE` is
+//! faster still (on all three) since the vDSO skips its interpolation step.
+//! Every other operation is a genuine syscall on both sides, so the numbers
+//! should be at parity — the point being that replacing the `libc` crate costs
+//! nothing at runtime.
 
 use std::hint::black_box;
 use std::os::fd::AsRawFd;
@@ -98,6 +100,26 @@ fn main() {
         black_box(ts.tv_nsec);
     });
 
+    // The *_COARSE clocks skip the vDSO's fine-grained interpolation step, so
+    // they are faster than the precise clock above at the cost of millisecond-
+    // ish resolution — a good trade for a timestamp that doesn't need
+    // sub-millisecond accuracy (see CLOCK_MONOTONIC_COARSE's docs).
+    let r_clock_coarse = best_of(rounds, iters, || {
+        black_box(
+            rusty_libc::time::clock_gettime(rusty_libc::time::CLOCK_MONOTONIC_COARSE).unwrap(),
+        );
+    });
+    let l_clock_coarse = best_of(rounds, iters, || {
+        let mut ts = libc::timespec {
+            tv_sec: 0,
+            tv_nsec: 0,
+        };
+        unsafe {
+            libc::clock_gettime(libc::CLOCK_MONOTONIC_COARSE, &mut ts);
+        }
+        black_box(ts.tv_nsec);
+    });
+
     // Name the libc we're actually linked against, so the same binary is
     // self-describing whether it was built for the gnu (glibc) or musl target.
     let libc = if cfg!(target_env = "musl") {
@@ -125,5 +147,6 @@ fn main() {
     row("read(/dev/zero,64)", r_read, l_read);
     row("write(/dev/null,64)", r_write, l_write);
     row("clock_gettime(MONO)", r_clock, l_clock);
+    row("clock_gettime(MONO_COARSE)", r_clock_coarse, l_clock_coarse);
     println!("\n(ratio < 1.00 = rusty_libc faster; > 1.00 = {libc} faster)");
 }
