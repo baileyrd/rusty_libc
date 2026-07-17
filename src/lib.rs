@@ -39,4 +39,7 @@ pub mod tty;
 pub mod umask;
 pub mod wait;
 
+// Internal: vDSO symbol resolution backing the `time` fast paths.
+mod vdso;
+
 pub use arch::{from_ret, Errno};

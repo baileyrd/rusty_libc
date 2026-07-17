@@ -33,8 +33,24 @@ impl Timespec {
 }
 
 /// Read the current value of clock `clockid` (a `CLOCK_*` constant).
+///
+/// When the process vDSO exports a usable `clock_gettime`, this reads the clock
+/// entirely in userspace (no syscall trap), matching glibc's speed; otherwise
+/// it falls back to the raw syscall. The result is identical either way.
 pub fn clock_gettime(clockid: i32) -> Result<Timespec, Errno> {
     let mut ts = Timespec::default();
+
+    // Fast path: the vDSO reads the clock without entering the kernel. A
+    // non-zero return means the vDSO declined (e.g. an unsupported clock), so
+    // we fall through to the syscall, which reproduces success or the error.
+    if let Some(f) = crate::vdso::clock_gettime_fn() {
+        // SAFETY: `f` is the resolved vDSO entry with exactly this ABI; `ts` is
+        // a valid, exclusively-borrowed `timespec` it writes on success.
+        if unsafe { f(clockid, &mut ts as *mut Timespec) } == 0 {
+            return Ok(ts);
+        }
+    }
+
     // clock_gettime(clockid, &mut ts).
     // SAFETY: `ts` is a valid, exclusively-borrowed `struct timespec` the
     // kernel writes.
@@ -84,6 +100,54 @@ mod tests {
         // Sanity: the realtime clock is past 2020-01-01 (1_577_836_800).
         let now = clock_gettime(CLOCK_REALTIME).expect("clock_gettime");
         assert!(now.tv_sec > 1_577_836_800);
+    }
+
+    // Read CLOCK_MONOTONIC directly via the syscall, bypassing the vDSO.
+    fn raw_monotonic() -> i128 {
+        let mut ts = Timespec::default();
+        let ret = unsafe {
+            crate::arch::syscall2(
+                nr::CLOCK_GETTIME,
+                CLOCK_MONOTONIC as usize,
+                &mut ts as *mut Timespec as usize,
+            )
+        };
+        crate::arch::from_ret(ret).expect("raw clock_gettime");
+        ts.tv_sec as i128 * 1_000_000_000 + ts.tv_nsec as i128
+    }
+
+    #[test]
+    fn vdso_wrapper_agrees_with_raw_syscall() {
+        // Interleave raw-syscall reads around the public (maybe-vDSO) read; on
+        // the monotonic clock the three must be non-decreasing. A vDSO entry
+        // that returned garbage would violate the ordering.
+        let before = raw_monotonic();
+        let mid = clock_gettime(CLOCK_MONOTONIC).expect("clock_gettime");
+        let mid_ns = mid.tv_sec as i128 * 1_000_000_000 + mid.tv_nsec as i128;
+        let after = raw_monotonic();
+
+        assert!(
+            before <= mid_ns,
+            "wrapper read is before the prior syscall read"
+        );
+        assert!(
+            mid_ns <= after,
+            "wrapper read is after the later syscall read"
+        );
+    }
+
+    // The vDSO is always mapped on native x86_64 (and readable via
+    // /proc/self/auxv), so resolution must succeed there — proving the fast
+    // path is actually taken rather than silently always falling back. Not
+    // asserted on aarch64, where the CI job runs under qemu-user, which may not
+    // expose a guest vDSO.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn vdso_resolves_on_native_x86_64() {
+        assert!(
+            crate::vdso::clock_gettime_fn().is_some(),
+            "vDSO clock_gettime should resolve on native x86_64"
+        );
     }
 
     #[test]
