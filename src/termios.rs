@@ -189,6 +189,7 @@ pub fn tcgetattr(fd: i32) -> Result<Termios, Errno> {
 
 /// Set the terminal attributes of `fd` after draining pending output
 /// ([`TCSADRAIN`]). Convenience wrapper over [`tcsetattr_with`].
+#[inline]
 pub fn tcsetattr(fd: i32, termios: &Termios) -> Result<(), Errno> {
     tcsetattr_with(fd, TCSADRAIN, termios)
 }
@@ -244,6 +245,7 @@ pub fn tcsetpgrp(fd: i32, pgrp: i32) -> Result<(), Errno> {
 }
 
 /// Return `true` if `fd` refers to a terminal (a successful `TCGETS`).
+#[inline]
 pub fn isatty(fd: i32) -> bool {
     tcgetattr(fd).is_ok()
 }

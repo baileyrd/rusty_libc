@@ -69,6 +69,7 @@ pub fn kill(pid: i32, sig: i32) -> Result<(), Errno> {
 /// Send signal `sig` to every process in process group `pgrp`.
 ///
 /// Equivalent to `kill(-pgrp, sig)`; `pgrp == 0` targets the caller's group.
+#[inline]
 pub fn killpg(pgrp: i32, sig: i32) -> Result<(), Errno> {
     // `kill` reads a negative pid as "process group -pid". Negating maps `pgrp`
     // to that form; `0.wrapping_neg() == 0`, and `kill(0, sig)` already means
@@ -238,6 +239,7 @@ pub fn getsid(pid: i32) -> Result<i32, Errno> {
 /// Implemented via `getpgid(0)` so it is identical on both arches (aarch64 has
 /// no dedicated `getpgrp` syscall); querying your own group cannot meaningfully
 /// fail.
+#[inline]
 pub fn getpgrp() -> Result<i32, Errno> {
     getpgid(0)
 }

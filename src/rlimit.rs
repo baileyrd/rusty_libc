@@ -99,6 +99,7 @@ pub fn prlimit(
 
 /// Get the current soft/hard limit for `resource` (a `RLIMIT_*` constant) of
 /// the calling process. Shorthand for [`prlimit`] with `pid = 0`.
+#[inline]
 pub fn getrlimit(resource: i32) -> Result<Rlimit, Errno> {
     let mut old = Rlimit { cur: 0, max: 0 };
     prlimit(0, resource, None, Some(&mut old))?;
@@ -107,6 +108,7 @@ pub fn getrlimit(resource: i32) -> Result<Rlimit, Errno> {
 
 /// Set the soft/hard limit for `resource` on the calling process to `limit`.
 /// Shorthand for [`prlimit`] with `pid = 0`.
+#[inline]
 pub fn setrlimit(resource: i32, limit: &Rlimit) -> Result<(), Errno> {
     prlimit(0, resource, Some(limit), None)
 }
