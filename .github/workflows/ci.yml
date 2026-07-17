@@ -46,8 +46,44 @@ jobs:
       - name: Clippy
         run: cargo clippy --target ${{ matrix.target }} --all-targets -- -D warnings
 
+      # Default (no features) is the real no_std configuration: the crate is
+      # `#![no_std]` here, so an accidental `std::`/`alloc::` reference in
+      # library code fails to compile. `--no-default-features` makes that intent
+      # explicit even if a default feature is added later.
       - name: Build (no_std)
-        run: cargo build --target ${{ matrix.target }}
+        run: cargo build --target ${{ matrix.target }} --no-default-features
 
+      # Also build the opt-in `std` interop feature so it cannot rot.
+      - name: Build (std feature)
+        run: cargo build --target ${{ matrix.target }} --features std
+
+      # The fork/setsid/execve and signal-delivery tests mutate process-global
+      # state and fork the (otherwise multithreaded) harness; running the suite
+      # single-threaded makes the process effectively single-threaded at each
+      # fork point and removes cross-test races on shared state.
       - name: Test
-        run: cargo test --target ${{ matrix.target }}
+        run: cargo test --target ${{ matrix.target }} -- --test-threads=1
+
+  docs:
+    name: docs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain
+        run: rustup toolchain install stable --profile minimal
+      - name: Doc (deny warnings)
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --no-deps
+
+  msrv:
+    name: msrv (1.88)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install 1.88 toolchain
+        run: rustup toolchain install 1.88 --profile minimal
+      - name: Build on MSRV
+        run: cargo +1.88 build --no-default-features
+      - name: Build on MSRV (std feature)
+        run: cargo +1.88 build --features std

@@ -12,7 +12,7 @@
 //! returns, control resumes at whatever address `sa_restorer` points to, and
 //! that code must invoke `SYS_rt_sigreturn` to unwind the kernel-pushed signal
 //! frame. glibc supplies this trampoline; since we do not link glibc's
-//! `sigaction`, we must supply our own. [`sigreturn_trampoline`] is a naked
+//! `sigaction`, we must supply our own. `sigreturn_trampoline` is a naked
 //! function doing exactly `mov rax, RT_SIGRETURN; syscall`, and every
 //! [`signal`] install sets `SA_RESTORER` and points `sa_restorer` at it.
 //!
@@ -137,6 +137,47 @@ unsafe extern "C" fn sigreturn_trampoline() {
         "syscall",
         nr = const nr::RT_SIGRETURN,
     )
+}
+
+/// `sigprocmask`/`rt_sigprocmask` `how`: add the signals in `set` to the mask.
+pub const SIG_BLOCK: i32 = 0;
+/// `how`: remove the signals in `set` from the mask.
+pub const SIG_UNBLOCK: i32 = 1;
+/// `how`: set the mask to exactly `set`.
+pub const SIG_SETMASK: i32 = 2;
+
+/// Build the single-signal bit for `sig` in a [`sigprocmask`] mask.
+///
+/// The kernel `sigset_t` numbers signals from 1, so signal `n` is bit `n - 1`.
+#[inline]
+pub const fn sigmask(sig: i32) -> u64 {
+    1u64 << (sig - 1) as u64
+}
+
+/// Examine and change the calling thread's blocked-signal mask via
+/// `rt_sigprocmask`, returning the **previous** mask.
+///
+/// `how` is [`SIG_BLOCK`], [`SIG_UNBLOCK`], or [`SIG_SETMASK`]; `set` is a mask
+/// built from [`sigmask`] (OR several together). To read the current mask
+/// without changing it, pass `SIG_BLOCK` with `set == 0`.
+///
+/// A job-control shell uses this to block `SIGCHLD` around the fork/record
+/// critical section, then restore the saved mask.
+pub fn sigprocmask(how: i32, set: u64) -> Result<u64, Errno> {
+    let mut old: u64 = 0;
+    // rt_sigprocmask(how, &set, &mut old, sigsetsize).
+    // SAFETY: `set`/`old` are valid 8-byte kernel sigsets; `sigsetsize` matches.
+    let ret = unsafe {
+        syscall4(
+            nr::RT_SIGPROCMASK,
+            how as usize,
+            &set as *const u64 as usize,
+            &mut old as *mut u64 as usize,
+            SIGSETSIZE,
+        )
+    };
+    from_ret(ret)?;
+    Ok(old)
 }
 
 /// Install `handler` for signal `sig`, returning the previous handler.
@@ -269,5 +310,22 @@ mod tests {
         tgkill(pid, tid, SIGUSR2);
         assert_eq!(COUNT.load(Ordering::SeqCst), 0);
         unsafe { signal(SIGUSR2, prev) }.expect("restore SIGUSR2");
+
+        // --- Mask: block SIGUSR1, raise it (stays pending, handler not run),
+        // then restore the mask and confirm the pending signal is delivered
+        // exactly once. rt_sigprocmask masks per-thread, and tgkill targets
+        // this thread, so the accounting is exact. ---
+        COUNT.store(0, Ordering::SeqCst);
+        let prev = unsafe { signal(SIGUSR1, counting_handler as *const () as usize) }
+            .expect("install for mask");
+        let old_mask = sigprocmask(SIG_BLOCK, sigmask(SIGUSR1)).expect("block SIGUSR1");
+        tgkill(pid, tid, SIGUSR1);
+        // Blocked: pending, not yet delivered.
+        assert_eq!(COUNT.load(Ordering::SeqCst), 0);
+        // Restoring the mask unblocks SIGUSR1; the pending signal fires before
+        // rt_sigprocmask returns.
+        sigprocmask(SIG_SETMASK, old_mask).expect("restore mask");
+        assert_eq!(COUNT.load(Ordering::SeqCst), 1);
+        unsafe { signal(SIGUSR1, prev) }.expect("restore SIGUSR1 after mask");
     }
 }

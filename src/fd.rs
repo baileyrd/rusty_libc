@@ -5,17 +5,104 @@
 use crate::arch::nr;
 #[cfg(target_arch = "aarch64")]
 use crate::arch::syscall5;
-use crate::arch::{from_ret, from_ret_i32, syscall1, syscall2, syscall3, Errno};
+use crate::arch::{from_ret, from_ret_i32, syscall1, syscall2, syscall3, syscall4, Errno};
+use core::ffi::CStr;
 
 /// `poll(2)` event/return flag: data available to read.
 pub const POLLIN: i16 = 0x001;
+/// `poll(2)` event/return flag: urgent/priority data available to read.
+pub const POLLPRI: i16 = 0x002;
+/// `poll(2)` event/return flag: writing will not block.
+pub const POLLOUT: i16 = 0x004;
+/// `poll(2)` return-only flag: an error condition occurred.
+pub const POLLERR: i16 = 0x008;
+/// `poll(2)` return-only flag: the peer hung up (e.g. the pipe's writer closed).
+pub const POLLHUP: i16 = 0x010;
+/// `poll(2)` return-only flag: the fd is not open / invalid.
+pub const POLLNVAL: i16 = 0x020;
 
 /// `fcntl(2)` command: get the file-descriptor flags.
 pub const F_GETFD: i32 = 1;
 /// `fcntl(2)` command: set the file-descriptor flags.
 pub const F_SETFD: i32 = 2;
+/// `fcntl(2)` command: get the file-status flags (the `O_*` open flags).
+pub const F_GETFL: i32 = 3;
+/// `fcntl(2)` command: set the file-status flags (e.g. toggle [`O_NONBLOCK`]).
+pub const F_SETFL: i32 = 4;
+/// `fcntl(2)` command: like `F_DUPFD` but sets close-on-exec on the new fd.
+pub const F_DUPFD_CLOEXEC: i32 = 1030;
 /// File-descriptor flag: close the fd on `execve`.
 pub const FD_CLOEXEC: i32 = 1;
+
+/// Open/`pipe2`/`fcntl` file-status flag: set close-on-exec atomically.
+pub const O_CLOEXEC: i32 = 0o2000000;
+/// Open/`pipe2`/`fcntl` file-status flag: non-blocking I/O.
+pub const O_NONBLOCK: i32 = 0o0004000;
+
+// `open`/`openat` access modes (mutually exclusive; low two bits).
+/// Open for reading only.
+pub const O_RDONLY: i32 = 0o0;
+/// Open for writing only.
+pub const O_WRONLY: i32 = 0o1;
+/// Open for reading and writing.
+pub const O_RDWR: i32 = 0o2;
+
+// `open`/`openat` creation and status flags (OR into the access mode).
+/// Create the file if it does not exist (uses the `mode` argument).
+pub const O_CREAT: i32 = 0o100;
+/// With [`O_CREAT`], fail with `EEXIST` if the file already exists.
+pub const O_EXCL: i32 = 0o200;
+/// Truncate an existing regular file to length 0 on open.
+pub const O_TRUNC: i32 = 0o1000;
+/// Append: every write goes to the current end of the file.
+pub const O_APPEND: i32 = 0o2000;
+/// Fail with `ENOTDIR` unless the path is a directory.
+///
+/// This flag is one of the few `O_*` values that differ by architecture:
+/// `0o200000` on x86_64 but `0o40000` on aarch64 (where `0o200000` is
+/// `O_DIRECT`), so it is defined per-arch.
+#[cfg(target_arch = "x86_64")]
+pub const O_DIRECTORY: i32 = 0o200000;
+/// Fail with `ENOTDIR` unless the path is a directory (aarch64 value).
+#[cfg(target_arch = "aarch64")]
+pub const O_DIRECTORY: i32 = 0o40000;
+
+/// Special `dirfd` for [`openat`] meaning "resolve relative paths against the
+/// current working directory" — i.e. behave like [`open`].
+pub const AT_FDCWD: i32 = -100;
+
+/// Open the file at `path` relative to the directory referred to by `dirfd`
+/// (or absolute paths regardless of `dirfd`), returning a new descriptor.
+///
+/// `flags` is an access mode ([`O_RDONLY`]/[`O_WRONLY`]/[`O_RDWR`]) ORed with
+/// creation/status flags ([`O_CREAT`], [`O_TRUNC`], [`O_APPEND`],
+/// [`O_CLOEXEC`], …). `mode` is the permission bits for a newly created file
+/// and is ignored unless [`O_CREAT`] is set. Pass [`AT_FDCWD`] for `dirfd` to
+/// resolve `path` against the current working directory.
+pub fn openat(dirfd: i32, path: &CStr, flags: i32, mode: u32) -> Result<i32, Errno> {
+    // SAFETY: `path` is a valid nul-terminated C string the kernel only reads;
+    // `dirfd`/`flags`/`mode` are plain integers.
+    let ret = unsafe {
+        syscall4(
+            nr::OPENAT,
+            dirfd as usize,
+            path.as_ptr() as usize,
+            flags as usize,
+            mode as usize,
+        )
+    };
+    from_ret_i32(ret)
+}
+
+/// Open the file at `path` (resolved against the current working directory for
+/// relative paths), returning a new descriptor. Thin [`openat`] wrapper using
+/// [`AT_FDCWD`]; see it for the `flags`/`mode` conventions.
+///
+/// Implemented over `openat` so it is identical on x86_64 and aarch64 (aarch64
+/// has no legacy `open` syscall).
+pub fn open(path: &CStr, flags: i32, mode: u32) -> Result<i32, Errno> {
+    openat(AT_FDCWD, path, flags, mode)
+}
 
 /// A `poll(2)` request/response entry. Kernel `struct pollfd` layout.
 #[repr(C)]
@@ -34,6 +121,49 @@ const _: () = assert!(core::mem::offset_of!(PollFd, fd) == 0);
 const _: () = assert!(core::mem::offset_of!(PollFd, events) == 4);
 const _: () = assert!(core::mem::offset_of!(PollFd, revents) == 6);
 
+impl PollFd {
+    /// Construct a request watching `fd` for `events` (an OR of `POLL*`
+    /// flags), with `revents` cleared.
+    #[inline]
+    pub const fn new(fd: i32, events: i16) -> Self {
+        PollFd {
+            fd,
+            events,
+            revents: 0,
+        }
+    }
+
+    /// True if the kernel reported [`POLLIN`] (data available to read).
+    #[inline]
+    pub const fn is_readable(self) -> bool {
+        self.revents & POLLIN != 0
+    }
+
+    /// True if the kernel reported [`POLLOUT`] (writing will not block).
+    #[inline]
+    pub const fn is_writable(self) -> bool {
+        self.revents & POLLOUT != 0
+    }
+
+    /// True if the kernel reported [`POLLHUP`] (the peer hung up).
+    #[inline]
+    pub const fn is_hup(self) -> bool {
+        self.revents & POLLHUP != 0
+    }
+
+    /// True if the kernel reported [`POLLERR`] (an error condition).
+    #[inline]
+    pub const fn is_error(self) -> bool {
+        self.revents & POLLERR != 0
+    }
+
+    /// True if the kernel reported [`POLLNVAL`] (the fd is invalid).
+    #[inline]
+    pub const fn is_invalid(self) -> bool {
+        self.revents & POLLNVAL != 0
+    }
+}
+
 /// Read up to `buf.len()` bytes from `fd` into `buf`. Returns the byte count
 /// (0 at end-of-file).
 pub fn read(fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
@@ -49,6 +179,39 @@ pub fn write(fd: i32, buf: &[u8]) -> Result<usize, Errno> {
     // SAFETY: `buf` is a valid slice of `buf.len()` bytes the kernel only reads.
     let ret = unsafe { syscall3(nr::WRITE, fd as usize, buf.as_ptr() as usize, buf.len()) };
     from_ret(ret)
+}
+
+/// Write **all** of `buf` to `fd`, looping over short writes. Retries on
+/// `EINTR`; fails with `EIO` if a write reports zero progress.
+///
+/// [`write()`] can return fewer bytes than requested (especially to pipes and
+/// terminals); this drains the whole buffer so callers do not have to.
+pub fn write_all(fd: i32, mut buf: &[u8]) -> Result<(), Errno> {
+    while !buf.is_empty() {
+        match write(fd, buf) {
+            Ok(0) => return Err(Errno::EIO),
+            Ok(n) => buf = &buf[n..],
+            Err(e) if e == Errno::EINTR => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Read into `buf` until it is full or end-of-file, looping over short reads
+/// and retrying on `EINTR`. Returns the number of bytes read, which is less
+/// than `buf.len()` only when EOF was reached first.
+pub fn read_all(fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
+    let mut total = 0;
+    while total < buf.len() {
+        match read(fd, &mut buf[total..]) {
+            Ok(0) => break, // EOF
+            Ok(n) => total += n,
+            Err(e) if e == Errno::EINTR => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(total)
 }
 
 /// Wait for events on `fds`, up to `timeout` milliseconds (negative blocks
@@ -101,8 +264,8 @@ pub fn poll(fds: &mut [PollFd], timeout: i32) -> Result<usize, Errno> {
     from_ret(ret)
 }
 
-/// Create a pipe, returning `(read_end, write_end)`. `flags` accepts e.g.
-/// `O_CLOEXEC`/`O_NONBLOCK` (raw values; callers supply them).
+/// Create a pipe, returning `(read_end, write_end)`. `flags` accepts an OR of
+/// [`O_CLOEXEC`]/[`O_NONBLOCK`] (or `0` for none).
 pub fn pipe2(flags: i32) -> Result<(i32, i32), Errno> {
     let mut fds = [0i32; 2];
     // SAFETY: `fds` is a valid array of two i32s; the kernel fills both.
@@ -153,8 +316,10 @@ pub fn close(fd: i32) -> Result<(), Errno> {
     from_ret(ret).map(|_| ())
 }
 
-/// Perform an `fcntl(2)` operation with an integer argument (covers the
-/// `F_GETFD`/`F_SETFD`/`FD_CLOEXEC` set rush needs).
+/// Perform an `fcntl(2)` operation with an integer argument. Covers the
+/// descriptor-flag commands ([`F_GETFD`]/[`F_SETFD`] with [`FD_CLOEXEC`]), the
+/// status-flag commands ([`F_GETFL`]/[`F_SETFL`] with [`O_NONBLOCK`]), and
+/// [`F_DUPFD_CLOEXEC`].
 pub fn fcntl(fd: i32, cmd: i32, arg: i32) -> Result<i32, Errno> {
     // SAFETY: integer command and argument; no pointer is dereferenced for the
     // commands exposed here.
@@ -235,17 +400,70 @@ mod tests {
         let mut wf = unsafe { std::fs::File::from_raw_fd(w) };
         wf.write_all(b"x").unwrap();
 
-        let mut fds = [PollFd {
-            fd: r,
-            events: POLLIN,
-            revents: 0,
-        }];
+        let mut fds = [PollFd::new(r, POLLIN)];
         let n = poll(&mut fds, 1000).expect("poll");
         assert_eq!(n, 1);
-        assert!(fds[0].revents & POLLIN != 0);
+        assert!(fds[0].is_readable());
 
         drop(wf);
         close(r).expect("close r");
+    }
+
+    #[test]
+    fn poll_reports_hup_when_writer_closes() {
+        let (r, w) = pipe2(0).expect("pipe2");
+        // Close the write end with no data pending: the read end reports HUP.
+        close(w).expect("close w");
+
+        let mut fds = [PollFd::new(r, POLLIN)];
+        let n = poll(&mut fds, 1000).expect("poll");
+        assert_eq!(n, 1);
+        assert!(fds[0].is_hup());
+        close(r).expect("close r");
+    }
+
+    #[test]
+    fn fcntl_toggles_nonblock() {
+        let (r, w) = pipe2(0).expect("pipe2");
+
+        // Initially blocking: O_NONBLOCK clear in the status flags.
+        let flags = fcntl(r, F_GETFL, 0).expect("F_GETFL");
+        assert_eq!(flags & O_NONBLOCK, 0);
+
+        // Set non-blocking, then a read on the empty pipe returns EAGAIN
+        // instead of blocking.
+        fcntl(r, F_SETFL, flags | O_NONBLOCK).expect("F_SETFL");
+        assert_eq!(fcntl(r, F_GETFL, 0).unwrap() & O_NONBLOCK, O_NONBLOCK);
+        let mut buf = [0u8; 1];
+        assert_eq!(read(r, &mut buf), Err(Errno::EAGAIN));
+
+        close(r).expect("close r");
+        close(w).expect("close w");
+    }
+
+    #[test]
+    fn write_all_read_all_roundtrip() {
+        let (r, w) = pipe2(0).expect("pipe2");
+        write_all(w, b"hello world").expect("write_all");
+        close(w).expect("close w");
+
+        let mut buf = [0u8; 32];
+        // Buffer larger than the data: read_all stops at EOF, returning 11.
+        let n = read_all(r, &mut buf).expect("read_all");
+        assert_eq!(&buf[..n], b"hello world");
+        close(r).expect("close r");
+    }
+
+    #[test]
+    fn read_all_fills_exact_buffer() {
+        let (r, w) = pipe2(0).expect("pipe2");
+        write_all(w, b"abcdef").expect("write_all");
+        // Buffer smaller than the data: read_all fills it exactly.
+        let mut buf = [0u8; 3];
+        assert_eq!(read_all(r, &mut buf).expect("read_all"), 3);
+        assert_eq!(&buf, b"abc");
+        close(r).expect("close r");
+        close(w).expect("close w");
     }
 
     #[test]
@@ -268,7 +486,45 @@ mod tests {
 
     #[test]
     fn close_bad_fd_is_ebadf() {
-        assert_eq!(close(-1), Err(Errno(9))); // EBADF
+        assert_eq!(close(-1), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn open_create_write_read_roundtrip() {
+        use std::ffi::CString;
+        let path = format!(
+            "{}/rusty_libc_open_{}.tmp",
+            std::env::temp_dir().display(),
+            std::process::id()
+        );
+        let cpath = CString::new(path.as_str()).unwrap();
+
+        let fd = open(&cpath, O_WRONLY | O_CREAT | O_TRUNC, 0o600).expect("open create");
+        assert_eq!(write(fd, b"hi").expect("write"), 2);
+        close(fd).expect("close");
+
+        let fd = open(&cpath, O_RDONLY, 0).expect("open read");
+        let mut buf = [0u8; 8];
+        let n = read(fd, &mut buf).expect("read");
+        assert_eq!(&buf[..n], b"hi");
+        close(fd).expect("close");
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn open_missing_is_enoent() {
+        let cpath = std::ffi::CString::new("/nonexistent/rusty_libc/nope").unwrap();
+        assert_eq!(open(&cpath, O_RDONLY, 0), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn openat_dev_null_is_readable() {
+        // AT_FDCWD with an absolute path behaves exactly like open().
+        let fd = openat(AT_FDCWD, c"/dev/null", O_RDONLY, 0).expect("openat /dev/null");
+        let mut buf = [0u8; 4];
+        assert_eq!(read(fd, &mut buf).expect("read"), 0); // /dev/null is EOF
+        close(fd).expect("close");
     }
 
     #[test]

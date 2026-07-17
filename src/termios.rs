@@ -16,9 +16,20 @@ pub const NCCS: usize = 19;
 
 // ioctl requests (asm-generic / x86_64).
 const TCGETS: usize = 0x5401;
-const TCSETSW: usize = 0x5403; // TCSADRAIN semantics: drain output, then set.
+const TCSETS: usize = 0x5402; // TCSANOW: set immediately.
+const TCSETSW: usize = 0x5403; // TCSADRAIN: drain output, then set.
+const TCSETSF: usize = 0x5404; // TCSAFLUSH: drain output, flush input, then set.
 const TIOCGPGRP: usize = 0x540f;
 const TIOCSPGRP: usize = 0x5410;
+
+/// [`tcsetattr_with`] action: apply the change immediately.
+pub const TCSANOW: i32 = 0;
+/// [`tcsetattr_with`] action: apply after pending output drains (the default
+/// used by [`tcsetattr`]).
+pub const TCSADRAIN: i32 = 1;
+/// [`tcsetattr_with`] action: drain pending output and discard pending input,
+/// then apply. The usual choice when restoring the terminal on exit.
+pub const TCSAFLUSH: i32 = 2;
 
 // Input flags (`c_iflag`).
 /// Ignore BREAK conditions on input.
@@ -138,11 +149,25 @@ pub fn tcgetattr(fd: i32) -> Result<Termios, Errno> {
 }
 
 /// Set the terminal attributes of `fd` after draining pending output
-/// (`TCSADRAIN`).
+/// ([`TCSADRAIN`]). Convenience wrapper over [`tcsetattr_with`].
 pub fn tcsetattr(fd: i32, termios: &Termios) -> Result<(), Errno> {
-    // SAFETY: `TCSETSW` expects a `*const termios`; `termios` is a valid
+    tcsetattr_with(fd, TCSADRAIN, termios)
+}
+
+/// Set the terminal attributes of `fd`, choosing when the change takes effect
+/// with `actions` ([`TCSANOW`], [`TCSADRAIN`], or [`TCSAFLUSH`]). An unknown
+/// `actions` value is treated as [`TCSADRAIN`].
+pub fn tcsetattr_with(fd: i32, actions: i32, termios: &Termios) -> Result<(), Errno> {
+    let request = if actions == TCSANOW {
+        TCSETS
+    } else if actions == TCSAFLUSH {
+        TCSETSF
+    } else {
+        TCSETSW
+    };
+    // SAFETY: each request expects a `*const termios`; `termios` is a valid
     // borrow the kernel only reads.
-    unsafe { ioctl(fd, TCSETSW, termios as *const Termios as usize) }?;
+    unsafe { ioctl(fd, request, termios as *const Termios as usize) }?;
     Ok(())
 }
 
@@ -284,6 +309,28 @@ mod tests {
 
         // Restore the saved attributes and confirm the round-trip.
         tcsetattr(sfd, &cooked).expect("tcsetattr restore");
+        let restored = tcgetattr(sfd).expect("tcgetattr restored");
+        assert_ne!(restored.c_lflag & ICANON, 0);
+        assert_ne!(restored.c_lflag & ECHO, 0);
+    }
+
+    #[test]
+    fn tcsetattr_with_flush_and_now_apply() {
+        use std::os::fd::AsRawFd;
+        let (_m, s) = open_pty();
+        let sfd = s.as_raw_fd();
+
+        let cooked = tcgetattr(sfd).expect("tcgetattr");
+        let mut raw = cooked;
+        raw.make_raw();
+
+        // TCSAFLUSH applies raw mode (and discards pending input).
+        tcsetattr_with(sfd, TCSAFLUSH, &raw).expect("tcsetattr_with FLUSH");
+        let after = tcgetattr(sfd).expect("tcgetattr after");
+        assert_eq!(after.c_lflag & (ICANON | ECHO), 0);
+
+        // TCSANOW restores the saved attributes immediately.
+        tcsetattr_with(sfd, TCSANOW, &cooked).expect("tcsetattr_with NOW");
         let restored = tcgetattr(sfd).expect("tcgetattr restored");
         assert_ne!(restored.c_lflag & ICANON, 0);
         assert_ne!(restored.c_lflag & ECHO, 0);
