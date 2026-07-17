@@ -28,6 +28,30 @@ pub fn getuid() -> u32 {
     unsafe { syscall0(nr::GETUID) as u32 }
 }
 
+/// Get the calling process's effective user ID. Cannot fail.
+///
+/// This is the id the kernel checks for permissions; a shell compares it to `0`
+/// to decide the root prompt (`#` vs `$`).
+#[inline]
+pub fn geteuid() -> u32 {
+    // SAFETY: geteuid takes no arguments and never fails.
+    unsafe { syscall0(nr::GETEUID) as u32 }
+}
+
+/// Get the calling process's real group ID. Cannot fail.
+#[inline]
+pub fn getgid() -> u32 {
+    // SAFETY: getgid takes no arguments and never fails.
+    unsafe { syscall0(nr::GETGID) as u32 }
+}
+
+/// Get the calling process's effective group ID. Cannot fail.
+#[inline]
+pub fn getegid() -> u32 {
+    // SAFETY: getegid takes no arguments and never fails.
+    unsafe { syscall0(nr::GETEGID) as u32 }
+}
+
 /// Set the process group ID of `pid` to `pgid` (both `0` mean "self").
 pub fn setpgid(pid: i32, pgid: i32) -> Result<(), Errno> {
     // SAFETY: plain integer arguments, no memory referenced.
@@ -218,6 +242,15 @@ mod tests {
         assert!(getppid() > 0);
         // getpid must match the value std reports.
         assert_eq!(getpid() as u32, std::process::id());
+    }
+
+    #[test]
+    fn credential_getters_are_consistent() {
+        // The test process is not setuid/setgid, so effective == real, and the
+        // getters are stable across calls.
+        assert_eq!(geteuid(), getuid());
+        assert_eq!(getegid(), getgid());
+        assert_eq!(getuid(), getuid());
     }
 
     #[test]

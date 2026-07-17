@@ -130,13 +130,15 @@ already ships.
 
 # Round 2 — 10 more improvements
 
+> **Status:** all 10 (plus the README refresh) are implemented on this branch.
+
 A second pass after items 1–16 + nits landed. These are the next-most-valuable
 additions for rush (a shell), ordered roughly by impact. None overlap with the
 above.
 
 ## D. Missing syscalls a shell still needs
 
-17. **File metadata via `statx`** (new `stat` module). The `test`/`[`/`[[`
+17. **File metadata via `statx`** *(done)* (new `stat` module). The `test`/`[`/`[[`
     builtins (`-e -f -d -h -s -x`, size, `-nt`/`-ot` by mtime) and prompt/`ls`
     helpers all need `stat`. `statx` is the one metadata syscall present and
     identical in shape on both x86_64 and aarch64 (the legacy `stat`/`fstat`
@@ -144,24 +146,24 @@ above.
     `struct statx` + `statx(dirfd, path, flags, mask, &mut buf)` with
     `S_IF*` helpers is the portable choice. Highest-value gap.
 
-18. **`faccessat`** + `F_OK`/`R_OK`/`W_OK`/`X_OK` (and `AT_EACCESS`). PATH
+18. **`faccessat`** *(done)* + `F_OK`/`R_OK`/`W_OK`/`X_OK` (and `AT_EACCESS`). PATH
     command resolution ("is this candidate executable?") and `[ -x ]`/`[ -r ]`
     need an access check that doesn't require opening the file. Small, high
     value — it's on the hot path of every external command lookup.
 
-19. **Filesystem mutations: `unlinkat`, `mkdirat`, `renameat2`, `symlinkat`,
+19. **Filesystem mutations: `unlinkat`, `mkdirat`, `renameat2`, `symlinkat`, *(done)*
     `readlinkat`** (in `fd` or a new `fs` module, all `*at` forms with
     `AT_FDCWD`). Needed for here-doc/temp-file cleanup, the `mkdir`/`rm`-ish
     builtins some shells ship, and `cd -P`/symlink resolution (`readlinkat`).
     `renameat2` (not legacy `rename`) because aarch64 has only the `*at`
     variants.
 
-20. **`geteuid`, `getgid`, `getegid`** (+ optionally `getgroups`) in `process`.
+20. **`geteuid`, `getgid`, `getegid`** *(done)* (+ optionally `getgroups`) in `process`.
     `getuid` is currently alone; a shell needs the **effective** ids for the
     privilege-aware prompt (`#` vs `$`), the `id`/`groups` builtins, and
     permission decisions. Three one-line syscalls.
 
-21. **`clock_gettime` + `nanosleep`** (new `time` module). Drives `$SECONDS`/
+21. **`clock_gettime` + `nanosleep`** *(done)* (new `time` module). Drives `$SECONDS`/
     `EPOCHREALTIME`, `read -t <timeout>`, the `sleep` builtin, and command
     timing (`time`). Both are raw syscalls on both arches; `CLOCK_MONOTONIC`/
     `CLOCK_REALTIME` constants come with them. (A vDSO fast path is a later
@@ -169,7 +171,7 @@ above.
 
 ## E. Signals & job control
 
-22. **`sigaction`-style install exposing `sa_flags`** + the `SA_*` constants
+22. **`sigaction`-style install exposing `sa_flags`** *(done)* + the `SA_*` constants
     (`SA_NOCLDSTOP`, `SA_NOCLDWAIT`, `SA_RESTART`, `SA_NODEFER`,
     `SA_RESETHAND`, `SA_SIGINFO`). `signal()` hardcodes `SA_RESTART`, but a job
     controller wants `SA_NOCLDSTOP` on `SIGCHLD` (no `SIGCHLD` for stops it
@@ -177,7 +179,7 @@ above.
     so a blocked `read` breaks with `EINTR` on Ctrl-C. Keep `signal()` as the
     BSD-semantics convenience; add `sigaction(sig, handler, flags)` alongside.
 
-23. **`sigsuspend` (+ `sigpending`)** in `signal`. The race-free "wait for a
+23. **`sigsuspend` (+ `sigpending`)** *(done)* in `signal`. The race-free "wait for a
     signal" primitive: block `SIGCHLD`, check job state, then `sigsuspend` with
     it unblocked — closes the window where a `SIGCHLD` arriving between the
     check and the wait would be lost. Pairs directly with the existing
@@ -185,18 +187,18 @@ above.
 
 ## F. Terminal control
 
-24. **Full `c_cc` index constants** in `termios`: `VINTR VQUIT VERASE VKILL
+24. **Full `c_cc` index constants** *(done)* in `termios`: `VINTR VQUIT VERASE VKILL
     VEOF VEOL VSTART VSTOP VSUSP VREPRINT VWERASE VLNEXT VDISCARD` (only `VMIN`
     and `VTIME` exist today). A line editor that displays or rebinds the
     special characters (`^C`, `^Z`, erase/kill, `stty`-style output) needs the
     whole set; they are just indices into the existing `c_cc` array.
 
-25. **`tcflush` / `tcdrain`** (via `TCFLSH` / `TCSBRK` ioctls). `tcflush(fd,
+25. **`tcflush` / `tcdrain`** *(done)* (via `TCFLSH` / `TCSBRK` ioctls). `tcflush(fd,
     TCIFLUSH)` to discard typed-ahead input after an interrupt, and `tcdrain`
     to wait for output to drain, are standard line-editor operations. Small,
     and they reuse the existing crate-internal `ioctl` shim.
 
-26. **`dup3(oldfd, newfd, flags)` public** in `fd`. `dup2` exists, but there is
+26. **`dup3(oldfd, newfd, flags)` public** *(done)* in `fd`. `dup2` exists, but there is
     no way to duplicate a descriptor onto another **with `O_CLOEXEC` set
     atomically** — which redirections want so the new fd doesn't leak across
     the next `exec`. The aarch64 path already calls `dup3` internally; just
@@ -204,7 +206,7 @@ above.
 
 ## G. Docs & polish
 
-- **README is stale** — it still opens "A **planned** … crate" and lists no
+- *(done)* **README is stale** — it still opens "A **planned** … crate" and lists no
   implemented surface, though the crate now covers ~25 syscalls across 9
   modules with the `std` feature. Refresh it: status, a module/coverage table,
   a short usage example, and the `std` feature flag. Cheap, and it's the first

@@ -21,6 +21,7 @@ pub mod nr {
     pub const RT_SIGPROCMASK: usize = 14;
     pub const RT_SIGRETURN: usize = 15;
     pub const IOCTL: usize = 16;
+    pub const NANOSLEEP: usize = 35;
     pub const DUP: usize = 32;
     pub const DUP2: usize = 33;
     pub const GETPID: usize = 39;
@@ -35,16 +36,30 @@ pub mod nr {
     pub const FCHDIR: usize = 81;
     pub const UMASK: usize = 95;
     pub const GETUID: usize = 102;
+    pub const GETGID: usize = 104;
+    pub const GETEUID: usize = 107;
+    pub const GETEGID: usize = 108;
     pub const SETPGID: usize = 109;
     pub const GETPPID: usize = 110;
     pub const SETSID: usize = 112;
     pub const GETPGID: usize = 121;
     pub const GETSID: usize = 124;
-    pub const OPENAT: usize = 257;
+    pub const RT_SIGPENDING: usize = 127;
+    pub const RT_SIGSUSPEND: usize = 130;
+    pub const CLOCK_GETTIME: usize = 228;
     pub const EXIT_GROUP: usize = 231;
+    pub const OPENAT: usize = 257;
+    pub const MKDIRAT: usize = 258;
+    pub const UNLINKAT: usize = 263;
+    pub const SYMLINKAT: usize = 266;
+    pub const READLINKAT: usize = 267;
+    pub const FACCESSAT: usize = 269;
+    pub const DUP3: usize = 292;
     pub const PIPE2: usize = 293;
     pub const PRLIMIT64: usize = 302;
+    pub const RENAMEAT2: usize = 316;
     pub const EXECVEAT: usize = 322;
+    pub const STATX: usize = 332;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.
