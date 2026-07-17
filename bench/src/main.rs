@@ -1,10 +1,17 @@
 //! Micro-benchmark: the same syscalls issued through `rusty_libc` vs the `libc`
-//! crate (glibc). Reports the best (lowest-noise) ns/op over several rounds.
+//! crate, reporting the best (lowest-noise) ns/op over several rounds. The
+//! `libc` crate binds the system C library, so the comparison target is
+//! whichever libc this build links — **glibc** on the `-gnu` target, **musl**
+//! on the `-musl` target — and the output labels itself accordingly.
 //!
-//! Run with: `cargo run --release` (from this directory).
+//! Run with:
+//! - `cargo run --release`                                 (vs glibc)
+//! - `cargo run --release --target x86_64-unknown-linux-musl`  (vs musl)
 //!
-//! The interesting row is `clock_gettime`: glibc serves it from the vDSO in
-//! userspace, and `rusty_libc` does too (its vDSO fast path), so both avoid the
+//! or `./run.sh` for both.
+//!
+//! The interesting row is `clock_gettime`: both libcs serve it from the vDSO in
+//! userspace, and `rusty_libc` does too (its vDSO fast path), so all avoid the
 //! syscall trap. Every other operation is a genuine syscall on both sides, so
 //! the numbers should be at parity — the point being that replacing the `libc`
 //! crate costs nothing at runtime.
@@ -91,18 +98,32 @@ fn main() {
         black_box(ts.tv_nsec);
     });
 
+    // Name the libc we're actually linked against, so the same binary is
+    // self-describing whether it was built for the gnu (glibc) or musl target.
+    let libc = if cfg!(target_env = "musl") {
+        "musl"
+    } else if cfg!(target_env = "gnu") {
+        "glibc"
+    } else {
+        "libc"
+    };
+
+    println!("rusty_libc vs {libc}  (best of {rounds} rounds x {iters} iters)\n");
     println!(
-        "{:<22} {:>12} {:>12} {:>11}",
-        "operation", "rusty (ns)", "libc (ns)", "rusty/libc"
+        "{:<22} {:>12} {:>12} {:>12}",
+        "operation",
+        "rusty (ns)",
+        format!("{libc} (ns)"),
+        format!("rusty/{libc}")
     );
-    println!("{}", "-".repeat(59));
+    println!("{}", "-".repeat(60));
     let row = |name: &str, r: f64, l: f64| {
-        println!("{name:<22} {r:>12.2} {l:>12.2} {:>10.2}x", r / l);
+        println!("{name:<22} {r:>12.2} {l:>12.2} {:>11.2}x", r / l);
     };
     row("getpid", r_getpid, l_getpid);
     row("getuid", r_getuid, l_getuid);
     row("read(/dev/zero,64)", r_read, l_read);
     row("write(/dev/null,64)", r_write, l_write);
     row("clock_gettime(MONO)", r_clock, l_clock);
-    println!("\n(ratio < 1.00 = rusty_libc faster; > 1.00 = libc faster)");
+    println!("\n(ratio < 1.00 = rusty_libc faster; > 1.00 = {libc} faster)");
 }
