@@ -77,6 +77,25 @@ pub fn killpg(pgrp: i32, sig: i32) -> Result<(), Errno> {
     kill(pgrp.wrapping_neg(), sig)
 }
 
+/// Open a file descriptor referring to process `pid` (`pidfd_open(2)`,
+/// Track P). Unlike a bare pid number, the returned fd stays a stable
+/// handle to *this specific* process even if `pid` exits and the kernel
+/// recycles the number for an unrelated process later — the reuse race a
+/// raw pid can't avoid. Poll it for readability (readable once the
+/// process exits) or wait on it via `waitid(P_PIDFD, ...)`.
+///
+/// `flags` must be `0` — the kernel defines no flags for this syscall as
+/// of the versions this crate targets; a future one (e.g. `PIDFD_NONBLOCK`)
+/// would be admitted here when a consumer needs it.
+///
+/// The returned fd is `O_CLOEXEC` by kernel default and must be closed
+/// with [`crate::fd::close`] like any other fd.
+pub fn pidfd_open(pid: i32, flags: u32) -> Result<i32, Errno> {
+    // SAFETY: plain integer arguments, no memory referenced.
+    let ret = unsafe { syscall2(nr::PIDFD_OPEN, pid as usize, flags as usize) };
+    from_ret_i32(ret)
+}
+
 /// Terminate all threads in the process with status `status`. Never returns.
 pub fn exit_group(status: i32) -> ! {
     // SAFETY: exit_group never returns; the kernel tears the process down.
@@ -415,5 +434,38 @@ mod tests {
                 assert_eq!(wait::wexitstatus(status), 7);
             }
         }
+    }
+
+    #[test]
+    fn pidfd_open_self_yields_a_pollable_fd() {
+        use crate::fd;
+
+        let pidfd = pidfd_open(getpid(), 0).expect("pidfd_open(self)");
+        assert!(pidfd >= 0);
+        // Not readable while the process is alive: a poll with a zero
+        // timeout must time out (0 fds ready), not report POLLIN.
+        let mut fds = [fd::PollFd {
+            fd: pidfd,
+            events: fd::POLLIN,
+            revents: 0,
+        }];
+        let n = fd::poll(&mut fds, 0).expect("poll");
+        assert_eq!(n, 0);
+        fd::close(pidfd).expect("close pidfd");
+    }
+
+    #[test]
+    fn pidfd_open_refuses_a_dead_pid() {
+        // Fork a child, wait for it to exit, then confirm the kernel
+        // refuses to open a pidfd for the now-gone pid — ESRCH, not a
+        // silent success on a recycled/nonexistent identity.
+        use crate::wait;
+
+        let child = match unsafe { fork() }.expect("fork") {
+            0 => exit_group(0),
+            pid => pid,
+        };
+        wait::waitpid(child, 0).expect("waitpid");
+        assert_eq!(pidfd_open(child, 0), Err(Errno::ESRCH));
     }
 }

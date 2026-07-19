@@ -66,6 +66,8 @@ pub mod nr {
     pub const PRLIMIT64: usize = 261;
     pub const STATX: usize = 291;
     pub const EXECVEAT: usize = 387;
+    pub const GETDENTS64: usize = 61;
+    pub const PIDFD_OPEN: usize = 434;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.

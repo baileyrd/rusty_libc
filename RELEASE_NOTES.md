@@ -11,6 +11,27 @@ Stay up to date with the latest changes to rusty_libc.
 
 ---
 
+## `getdents64` + `pidfd_open` — [PR #19](https://github.com/baileyrd/rusty_libc/pull/19)
+
+**July 19, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/40a8bd1...a373607)**
+
+**Added**
+- `fs::getdents64` + `fs::dirents` — the last syscall standing between
+  `rush`'s directory listing and Track P (`readdir`/`DIR*` was the one
+  remaining glibc-only path). `getdents64` fills a caller-owned buffer with
+  packed kernel `linux_dirent64` records, no per-entry allocation or hidden
+  internal buffering, matching this crate's `read`-style bring-your-own-buffer
+  convention; `dirents` parses that buffer into a zero-allocation
+  `Iterator<Item = RawDirent>` by walking the kernel's own `d_reclen` chain.
+  `fs::DT_REG`/`DT_DIR`/`DT_LNK`/`DT_UNKNOWN` type tags included.
+- `process::pidfd_open` — a stable process-identity handle immune to pid
+  reuse, closing Track P's other remaining gap (`SYS_pidfd_open` was a raw
+  `syscall()` escape hatch on the consumer side until now). Poll it for
+  readability (readable once the process exits) or feed it to
+  `wait::waitid(P_PIDFD, ...)`.
+
+---
+
 ## Inline the hot path — [PR #16](https://github.com/baileyrd/rusty_libc/pull/16)
 
 **July 17, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/97c80c2...0fb52f4)**
