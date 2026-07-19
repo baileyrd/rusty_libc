@@ -358,6 +358,107 @@ pub fn readlink<'a>(path: &CStr, buf: &'a mut [u8]) -> Result<&'a [u8], Errno> {
     readlinkat(AT_FDCWD, path, buf)
 }
 
+// --- getdents64(2) --------------------------------------------------------
+
+/// [`RawDirent::d_type`] tag: the filesystem didn't return a type cheaply —
+/// a caller needing to know it unconditionally must `stat`/`lstat`.
+pub const DT_UNKNOWN: u8 = 0;
+/// [`RawDirent::d_type`] tag: a regular file.
+pub const DT_REG: u8 = 8;
+/// [`RawDirent::d_type`] tag: a directory.
+pub const DT_DIR: u8 = 4;
+/// [`RawDirent::d_type`] tag: a symbolic link.
+pub const DT_LNK: u8 = 10;
+
+/// `getdents64(2)`, Track P: fill `buf` with as many packed
+/// `linux_dirent64` records as fit, returning the byte count written (`0`
+/// at end of directory). Parse the filled region with [`dirents`].
+///
+/// Unlike glibc's `readdir`/`DIR*`, there is no per-entry allocation or
+/// hidden internal buffering here — `buf` *is* the buffer, reused across
+/// calls by the caller, matching this crate's other bring-your-own-buffer
+/// calls ([`crate::fd::read`]).
+pub fn getdents64(fd: i32, buf: &mut [u8]) -> Result<usize, Errno> {
+    // SAFETY: `buf` is a valid, exclusively borrowed region of `buf.len()`
+    // bytes the kernel packs `linux_dirent64` records into, never writing
+    // past `buf.len()`; `fd` is a caller-owned directory descriptor.
+    let ret = unsafe {
+        syscall3(
+            nr::GETDENTS64,
+            fd as usize,
+            buf.as_mut_ptr() as usize,
+            buf.len(),
+        )
+    };
+    from_ret(ret)
+}
+
+/// One directory entry parsed out of a [`getdents64`]-filled buffer by
+/// [`dirents`] — borrows directly from it, no allocation.
+#[derive(Debug, Clone, Copy)]
+pub struct RawDirent<'a> {
+    /// The entry's inode number.
+    pub d_ino: u64,
+    /// A [`DT_REG`]/[`DT_DIR`]/[`DT_LNK`]/… tag, or [`DT_UNKNOWN`].
+    pub d_type: u8,
+    /// The entry's bare name — not NUL-terminated, and `.`/`..` are not
+    /// filtered out (the kernel includes them like any other entry; a
+    /// `readdir`-emulating caller filters them the way it already must).
+    pub d_name: &'a [u8],
+}
+
+/// Iterator over a [`getdents64`]-filled buffer, yielding [`RawDirent`].
+/// Constructed by [`dirents`].
+pub struct Dirents<'a> {
+    buf: &'a [u8],
+    pos: usize,
+}
+
+/// Parse the `n` bytes [`getdents64`] wrote into `buf[..n]` as a sequence
+/// of [`RawDirent`]s. Pass exactly the filled prefix (the byte count
+/// `getdents64` returned) — the kernel's own `d_reclen` chain governs
+/// iteration, so a self-consistent buffer parses correctly regardless of
+/// how many records it holds.
+///
+/// # Panics
+///
+/// Panics on a buffer that isn't a genuine `getdents64` fill (truncated
+/// mid-record, or a corrupt `d_reclen`) — a programmer error, not a
+/// runtime condition: `buf` is kernel-produced, never external/untrusted
+/// data, so there is nothing to recover from gracefully here.
+pub fn dirents(buf: &[u8]) -> Dirents<'_> {
+    Dirents { buf, pos: 0 }
+}
+
+impl<'a> Iterator for Dirents<'a> {
+    type Item = RawDirent<'a>;
+
+    fn next(&mut self) -> Option<RawDirent<'a>> {
+        if self.pos >= self.buf.len() {
+            return None;
+        }
+        let rec = &self.buf[self.pos..];
+        // Kernel `struct linux_dirent64` layout: d_ino (u64) @0, d_off
+        // (i64, unused here) @8, d_reclen (u16) @16, d_type (u8) @18,
+        // then the NUL-terminated d_name, padded to d_reclen.
+        let d_ino = u64::from_ne_bytes(rec[0..8].try_into().unwrap());
+        let d_reclen = u16::from_ne_bytes(rec[16..18].try_into().unwrap()) as usize;
+        let d_type = rec[18];
+        let name_region = &rec[19..d_reclen];
+        let nul = name_region
+            .iter()
+            .position(|&b| b == 0)
+            .unwrap_or(name_region.len());
+        let d_name = &name_region[..nul];
+        self.pos += d_reclen;
+        Some(RawDirent {
+            d_ino,
+            d_type,
+            d_name,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -446,5 +547,41 @@ mod tests {
 
         rmdir(&b).expect("rmdir b");
         assert_eq!(stat(&b), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn getdents64_lists_created_entries_with_types() {
+        let dir = temp_path("getdents");
+        let _ = rmdir(&dir);
+        mkdir(&dir, 0o700).expect("mkdir");
+
+        let dirfd = fd::open(&dir, fd::O_RDONLY | fd::O_DIRECTORY, 0).expect("open dir");
+        let file =
+            fd::openat(dirfd, c"a_file", fd::O_WRONLY | fd::O_CREAT, 0o600).expect("create a_file");
+        fd::close(file).expect("close a_file");
+        mkdirat(dirfd, c"a_subdir", 0o700).expect("create a_subdir");
+
+        let mut names_and_types = std::collections::BTreeMap::new();
+        let mut buf = [0u8; 4096];
+        loop {
+            let n = getdents64(dirfd, &mut buf).expect("getdents64");
+            if n == 0 {
+                break;
+            }
+            for entry in dirents(&buf[..n]) {
+                let name = String::from_utf8_lossy(entry.d_name).into_owned();
+                names_and_types.insert(name, entry.d_type);
+            }
+        }
+        fd::close(dirfd).expect("close dirfd");
+
+        // `.`/`..` are present (unfiltered, by design) alongside the two
+        // created entries with their real kernel-reported types.
+        assert!(names_and_types.contains_key("."));
+        assert!(names_and_types.contains_key(".."));
+        assert_eq!(names_and_types.get("a_file"), Some(&DT_REG));
+        assert_eq!(names_and_types.get("a_subdir"), Some(&DT_DIR));
+
+        let _ = std::fs::remove_dir_all(dir.to_str().expect("utf8 path"));
     }
 }

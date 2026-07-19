@@ -87,6 +87,11 @@ pub const P_ALL: i32 = 0;
 pub const P_PID: i32 = 1;
 /// [`waitid`] `idtype`: wait for any child in the process group `id`.
 pub const P_PGID: i32 = 2;
+/// [`waitid`] `idtype`: wait for the child referred to by the pidfd `id`
+/// (Track P — the `crate::process::pidfd_open` companion). Requires
+/// [`WEXITED`], and only for a fd `pidfd_open` actually returned, not any
+/// arbitrary open fd.
+pub const P_PIDFD: i32 = 3;
 
 /// [`waitid`] option: report children that have terminated. At least one of
 /// `WEXITED`/[`WSTOPPED`]/[`WCONTINUED`] must be set.
@@ -257,5 +262,39 @@ mod tests {
     #[test]
     fn waitid_no_child_is_echild() {
         assert_eq!(waitid(P_ALL, 0, WEXITED | WNOHANG), Err(Errno::ECHILD));
+    }
+
+    #[test]
+    fn waitid_via_pidfd_reaps_the_child() {
+        use crate::fd;
+        use crate::process::{exit_group, fork, pidfd_open};
+
+        // CI runs single-threaded, and the child only issues raw syscalls;
+        // see `process::fork`'s safety note.
+        let pid = match unsafe { fork() }.expect("fork") {
+            0 => exit_group(9),
+            pid => pid,
+        };
+        let pidfd = pidfd_open(pid, 0).expect("pidfd_open");
+
+        // Block on the pidfd becoming readable (the child exiting) instead
+        // of polling with a timeout — this is the whole point of a pidfd
+        // over a bare pid: a normal readiness primitive works on it.
+        let mut fds = [fd::PollFd {
+            fd: pidfd,
+            events: fd::POLLIN,
+            revents: 0,
+        }];
+        let n = fd::poll(&mut fds, 5000).expect("poll");
+        assert_eq!(n, 1);
+
+        let info = waitid(P_PIDFD, pidfd, WEXITED).expect("waitid via pidfd");
+        assert_eq!(info.si_pid, pid);
+        assert_eq!(info.si_code, CLD_EXITED);
+        assert_eq!(info.si_status, 9);
+
+        // Reaped: a second waitpid on the bare pid sees nothing left.
+        assert_eq!(waitpid(pid, 0), Err(Errno::ECHILD));
+        fd::close(pidfd).expect("close pidfd");
     }
 }

@@ -63,6 +63,8 @@ pub mod nr {
     pub const RENAMEAT2: usize = 316;
     pub const EXECVEAT: usize = 322;
     pub const STATX: usize = 332;
+    pub const GETDENTS64: usize = 217;
+    pub const PIDFD_OPEN: usize = 434;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.
