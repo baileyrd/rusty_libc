@@ -11,6 +11,25 @@ Stay up to date with the latest changes to rusty_libc.
 
 ---
 
+## Round 3, batch 1: an aarch64 correctness fix, and five REVIEW.md items — [PR #39](https://github.com/baileyrd/rusty_libc/pull/39)–[#43](https://github.com/baileyrd/rusty_libc/pull/43)
+
+**July 22, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/dfa4e8c...f566d12)**
+
+The first working batch off REVIEW.md's Round 3 list, plus one bug found while verifying syscall numbers for it.
+
+**Fixed**
+- `process::execveat` was silently broken on aarch64 — `arch::aarch64::nr::EXECVEAT` was `387`, an unallocated number on the generic syscall table aarch64 actually uses, instead of the real, permanently-fixed `281`. No test called `execveat` directly (only `execve`, a different syscall number), so this went uncaught, including by the aarch64 qemu-user CI job. Fixed, with a regression test that exercises `execveat`'s own `ENOENT` path on both arches. ([#38](https://github.com/baileyrd/rusty_libc/issues/38), [PR #39](https://github.com/baileyrd/rusty_libc/pull/39))
+
+**Added**
+- `Errno` named constants for `ENXIO`, `E2BIG`, `ENOEXEC`, `EXDEV`, `ENODEV`, `ENFILE`, `ETXTBSY`, `EFBIG`, `ENOSPC`, `EROFS`, `EMLINK`, `EDOM`, `ERANGE`, `ENAMETOOLONG`, `ENOTEMPTY`, `ELOOP`, `ETIMEDOUT`, `ECONNREFUSED` — everything `name()` already recognized but had no `pub const` for. Fixed `process::getcwd`'s own test, which had hardcoded `Err(Errno(34)) // ERANGE` for want of the const. ([#34](https://github.com/baileyrd/rusty_libc/issues/34), [PR #40](https://github.com/baileyrd/rusty_libc/pull/40))
+- `process::CStrArray` (`std` feature): an owned builder for the null-terminated `argv`/`envp` arrays `execve`/`execveat` need, so callers no longer have to hand-roll pointer arrays over self-managed `CString`s. ([#35](https://github.com/baileyrd/rusty_libc/issues/35), [PR #41](https://github.com/baileyrd/rusty_libc/pull/41))
+- `fd::ftruncate` — resize an already-open descriptor; `O_TRUNC` only truncates at `open` time. ([#26](https://github.com/baileyrd/rusty_libc/issues/26), [PR #42](https://github.com/baileyrd/rusty_libc/pull/42))
+- `fs::fchmodat`/`chmod` and `fs::fchownat`/`chown`/`lchown`, plus a `DONT_CHANGE` sentinel constant for `fchownat`'s per-field "leave this id alone" — `fs` had full path mutation but no way to change permissions or ownership at all. ([#23](https://github.com/baileyrd/rusty_libc/issues/23), [PR #43](https://github.com/baileyrd/rusty_libc/pull/43))
+
+All five REVIEW.md-derived changes verified on both x86_64 and aarch64 via a local cross toolchain + qemu-user (matching the CI matrix exactly), not just the CI run itself — every new syscall number was checked directly against `/usr/include/{x86_64-linux-gnu/asm,asm-generic}/unistd.h` rather than recalled from memory, which is exactly the discipline that caught the `execveat` bug above.
+
+---
+
 ## Capabilities assessment + standard governance scaffolding — [PR #36](https://github.com/baileyrd/rusty_libc/pull/36)
 
 **July 22, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/dfa4e8c...50bf31b)**
