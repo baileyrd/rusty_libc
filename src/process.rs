@@ -52,6 +52,30 @@ pub fn getegid() -> u32 {
     unsafe { syscall0(nr::GETEGID) as u32 }
 }
 
+/// Get the number of supplementary group IDs the calling process belongs to,
+/// without fetching them. Convenience for sizing the buffer passed to
+/// [`getgroups`] (`getgroups(2)` with `size == 0` leaves the buffer
+/// untouched and just returns the count).
+pub fn ngroups() -> Result<usize, Errno> {
+    // SAFETY: a null pointer is valid here precisely because size == 0 means
+    // the kernel never dereferences it.
+    let ret = unsafe { syscall2(nr::GETGROUPS, 0, 0) };
+    from_ret(ret)
+}
+
+/// Fill `buf` with the calling process's supplementary group IDs, returning
+/// the filled prefix. Fails with `EINVAL` if `buf` is smaller than the
+/// process's actual group count -- call [`ngroups`] first to size it, the
+/// same bring-your-own-buffer convention as [`crate::fd::read`].
+pub fn getgroups(buf: &mut [u32]) -> Result<&[u32], Errno> {
+    // SAFETY: `buf` is a valid, exclusively-borrowed slice of `buf.len()`
+    // `u32`s (matching the kernel's `gid_t`); the kernel writes at most that
+    // many entries.
+    let ret = unsafe { syscall2(nr::GETGROUPS, buf.len(), buf.as_mut_ptr() as usize) };
+    let n = from_ret(ret)?;
+    Ok(&buf[..n])
+}
+
 /// Set the process group ID of `pid` to `pgid` (both `0` mean "self").
 pub fn setpgid(pid: i32, pgid: i32) -> Result<(), Errno> {
     // SAFETY: plain integer arguments, no memory referenced.
@@ -342,6 +366,27 @@ mod tests {
         assert_eq!(geteuid(), getuid());
         assert_eq!(getegid(), getgid());
         assert_eq!(getuid(), getuid());
+    }
+
+    #[test]
+    fn ngroups_and_getgroups_agree() {
+        let n = ngroups().expect("ngroups");
+
+        // A buffer sized exactly by ngroups() must be filled completely.
+        let mut buf = std::vec![0u32; n];
+        let groups = getgroups(&mut buf).expect("getgroups");
+        assert_eq!(groups.len(), n);
+
+        // A too-small (but non-empty, when there's at least one group)
+        // buffer is rejected rather than silently truncated.
+        if n > 0 {
+            let mut tiny = std::vec![0u32; n - 1];
+            assert_eq!(getgroups(&mut tiny), Err(Errno::EINVAL));
+        }
+
+        // A larger-than-needed buffer still reports exactly `n` entries.
+        let mut spare = std::vec![0u32; n + 4];
+        assert_eq!(getgroups(&mut spare).expect("getgroups spare").len(), n);
     }
 
     #[test]
