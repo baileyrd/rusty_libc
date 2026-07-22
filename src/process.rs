@@ -123,6 +123,59 @@ pub fn nice(inc: i32) -> Result<i32, Errno> {
     getpriority(PRIO_PROCESS, 0)
 }
 
+// --- prctl(2) ----------------------------------------------------------
+
+/// [`prctl`] `option`: set the calling thread's parent-death signal (`arg2`
+/// is a signal number, or `0` to clear it).
+pub const PR_SET_PDEATHSIG: i32 = 1;
+/// [`prctl`] `option`: get the calling thread's parent-death signal (`arg2`
+/// is a `*mut i32` the kernel writes it into).
+pub const PR_GET_PDEATHSIG: i32 = 2;
+
+/// Raw `prctl(2)`: process-behavior control. Covers whichever `option` the
+/// caller passes; [`set_pdeathsig`]/[`get_pdeathsig`] are the safe,
+/// narrow convenience this crate names explicitly.
+///
+/// # Safety
+/// Some `option` values interpret `arg2`..`arg5` as pointers (e.g.
+/// [`PR_GET_PDEATHSIG`]); the caller must pass values valid for whichever
+/// `option` is used.
+pub unsafe fn prctl(
+    option: i32,
+    arg2: usize,
+    arg3: usize,
+    arg4: usize,
+    arg5: usize,
+) -> Result<i32, Errno> {
+    // SAFETY: forwarded to the caller's contract on `option`/`arg2..arg5`.
+    let ret = unsafe { syscall5(nr::PRCTL, option as usize, arg2, arg3, arg4, arg5) };
+    from_ret_i32(ret)
+}
+
+/// Ask the kernel to send `sig` to the calling thread if its parent thread
+/// exits first (`0` clears it). The standard fix for orphaned children
+/// surviving a crashed/killed parent: a job-control shell's children can
+/// arrange to die with it instead of being silently reparented to init.
+///
+/// Cleared across `execve` of a set-user-ID/set-group-ID binary, and (per
+/// `prctl(2)`) not inherited by a further `fork`, so a process that forks
+/// again must re-arm it in the new child if it wants the same protection
+/// there.
+pub fn set_pdeathsig(sig: i32) -> Result<(), Errno> {
+    // SAFETY: PR_SET_PDEATHSIG interprets arg2 as a plain signal number, not
+    // a pointer; arg3..arg5 are ignored for this option.
+    unsafe { prctl(PR_SET_PDEATHSIG, sig as usize, 0, 0, 0) }.map(|_| ())
+}
+
+/// Get the calling thread's current parent-death signal (`0` if none is set).
+pub fn get_pdeathsig() -> Result<i32, Errno> {
+    let mut sig: i32 = 0;
+    // SAFETY: PR_GET_PDEATHSIG writes through arg2 as a valid `*mut i32`;
+    // `sig` is exactly that, exclusively borrowed for the call.
+    unsafe { prctl(PR_GET_PDEATHSIG, &mut sig as *mut i32 as usize, 0, 0, 0) }?;
+    Ok(sig)
+}
+
 /// Set the process group ID of `pid` to `pgid` (both `0` mean "self").
 pub fn setpgid(pid: i32, pgid: i32) -> Result<(), Errno> {
     // SAFETY: plain integer arguments, no memory referenced.
@@ -742,5 +795,92 @@ mod tests {
         };
         wait::waitpid(child, 0).expect("waitpid");
         assert_eq!(pidfd_open(child, 0), Err(Errno::ESRCH));
+    }
+
+    #[test]
+    fn set_and_get_pdeathsig_roundtrip() {
+        use crate::signal::SIGKILL;
+        use crate::wait;
+
+        // Isolated in a forked child: this mutates real per-thread kernel
+        // state, and a fresh child always starts with pdeathsig cleared
+        // regardless of the parent's setting (prctl(2): "cleared for the
+        // child of a fork(2)"), so there's nothing to restore either way.
+        match unsafe { fork() }.expect("fork") {
+            0 => {
+                let ok = get_pdeathsig() == Ok(0)
+                    && set_pdeathsig(SIGKILL).is_ok()
+                    && get_pdeathsig() == Ok(SIGKILL)
+                    && set_pdeathsig(0).is_ok()
+                    && get_pdeathsig() == Ok(0);
+                exit_group(if ok { 0 } else { 1 });
+            }
+            pid => {
+                let (_, status) = wait::waitpid(pid, 0).expect("waitpid");
+                assert!(wait::wifexited(status));
+                assert_eq!(wait::wexitstatus(status), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn set_pdeathsig_kills_child_when_parent_exits() {
+        use crate::fd;
+        use crate::signal::SIGKILL;
+        use crate::wait;
+
+        // A three-generation dance, entirely to test something that only
+        // manifests when a *specific parent* exits:
+        //   test process -- fork --> intermediate -- fork --> grandchild
+        // The grandchild arms pdeathsig against the intermediate, then the
+        // intermediate exits immediately. If pdeathsig fires, the kernel
+        // kills the grandchild right away; a pipe held open only by the
+        // intermediate and the grandchild reports that via EOF once both
+        // exit (the test process closes its own write-end copy up front).
+        let (r, w) = fd::pipe2(0).expect("pipe2");
+
+        match unsafe { fork() }.expect("fork") {
+            0 => {
+                // Intermediate.
+                match unsafe { fork() }.expect("fork") {
+                    0 => {
+                        // Grandchild: arm pdeathsig against the intermediate,
+                        // then wait to be killed by it. The sleep is a
+                        // fallback bound, not the mechanism under test --
+                        // if pdeathsig regresses, this keeps the suite from
+                        // hanging instead of masking the regression (the
+                        // poll timeout below is well under this).
+                        let _ = set_pdeathsig(SIGKILL);
+                        crate::time::nanosleep(&crate::time::Timespec::from_millis(2000), None)
+                            .ok();
+                        exit_group(0);
+                    }
+                    _ => {
+                        // Having spawned the grandchild with pdeathsig
+                        // armed, exit immediately so it fires promptly.
+                        exit_group(0);
+                    }
+                }
+            }
+            intermediate_pid => {
+                fd::close(w).expect("close w");
+                let (_, status) = wait::waitpid(intermediate_pid, 0).expect("waitpid intermediate");
+                assert!(wait::wifexited(status));
+
+                // A working pdeathsig kills the grandchild within
+                // milliseconds of the intermediate exiting; a deadline far
+                // under its own 2s fallback turns a regression into a
+                // timeout here instead of a false pass.
+                let mut fds = [fd::PollFd::new(r, fd::POLLIN)];
+                let n = fd::poll(&mut fds, 500).expect("poll");
+                assert_eq!(
+                    n, 1,
+                    "grandchild did not die promptly -- pdeathsig did not fire"
+                );
+                assert!(fds[0].is_hup());
+
+                fd::close(r).expect("close r");
+            }
+        }
     }
 }
