@@ -65,7 +65,7 @@ pub mod nr {
     pub const WAIT4: usize = 260;
     pub const PRLIMIT64: usize = 261;
     pub const STATX: usize = 291;
-    pub const EXECVEAT: usize = 387;
+    pub const EXECVEAT: usize = 281;
     pub const GETDENTS64: usize = 61;
     pub const PIDFD_OPEN: usize = 434;
 }
