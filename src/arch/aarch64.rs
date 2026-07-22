@@ -36,6 +36,7 @@ pub mod nr {
     pub const MKDIRAT: usize = 34;
     pub const UNLINKAT: usize = 35;
     pub const SYMLINKAT: usize = 36;
+    pub const LINKAT: usize = 37;
     pub const READ: usize = 63;
     pub const READLINKAT: usize = 78;
     pub const PPOLL: usize = 73;

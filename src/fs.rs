@@ -329,6 +329,42 @@ pub fn symlink(target: &CStr, linkpath: &CStr) -> Result<(), Errno> {
     symlinkat(target, AT_FDCWD, linkpath)
 }
 
+/// [`linkat`] flag: if `oldpath` is a symlink, hard-link the file it points
+/// to rather than the symlink itself (the raw syscall's default, without this
+/// flag, is to hard-link the symlink itself).
+pub const AT_SYMLINK_FOLLOW: i32 = 0x400;
+
+/// Create a hard link at `newpath` (relative to `newdirfd`) for the existing
+/// file `oldpath` (relative to `olddirfd`). `flags` accepts
+/// [`AT_SYMLINK_FOLLOW`] (dereference `oldpath` if it is a symlink) or `0`.
+pub fn linkat(
+    olddirfd: i32,
+    oldpath: &CStr,
+    newdirfd: i32,
+    newpath: &CStr,
+    flags: i32,
+) -> Result<(), Errno> {
+    // SAFETY: both paths are valid C strings the kernel only reads.
+    let ret = unsafe {
+        syscall5(
+            nr::LINKAT,
+            olddirfd as usize,
+            oldpath.as_ptr() as usize,
+            newdirfd as usize,
+            newpath.as_ptr() as usize,
+            flags as usize,
+        )
+    };
+    from_ret(ret).map(|_| ())
+}
+
+/// Create the hard link `newpath` -> `oldpath` (both relative to the cwd),
+/// without following a symlinked `oldpath`. Shorthand for [`linkat`].
+#[inline]
+pub fn link(oldpath: &CStr, newpath: &CStr) -> Result<(), Errno> {
+    linkat(AT_FDCWD, oldpath, AT_FDCWD, newpath, 0)
+}
+
 /// Read the target of the symlink at `path` (relative to `dirfd`) into `buf`,
 /// returning the target bytes actually read.
 ///
@@ -648,6 +684,101 @@ mod tests {
 
         unlink(&link).expect("unlink link");
         assert_eq!(lstat(&link), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn link_creates_a_second_name_for_the_same_inode() {
+        let original = temp_path("link_src");
+        let hardlink = temp_path("link_dst");
+        let _ = unlink(&hardlink);
+
+        let f = fd::open(&original, fd::O_WRONLY | fd::O_CREAT | fd::O_TRUNC, 0o600).expect("open");
+        fd::write_all(f, b"shared content").expect("write_all");
+        fd::close(f).expect("close");
+
+        link(&original, &hardlink).expect("link");
+
+        // Same inode, and the kernel now reports 2 links to it.
+        let a = stat(&original).expect("stat original");
+        let b = stat(&hardlink).expect("stat hardlink");
+        assert_eq!(a.stx_ino, b.stx_ino);
+        assert_eq!(b.stx_nlink, 2);
+
+        // Content is visible through either name (it's the same file, not a copy).
+        let f = fd::open(&hardlink, fd::O_RDONLY, 0).expect("open hardlink");
+        let mut buf = [0u8; 32];
+        let n = fd::read(f, &mut buf).expect("read");
+        assert_eq!(&buf[..n], b"shared content");
+        fd::close(f).expect("close");
+
+        // Removing one name leaves the other (and the data) intact.
+        unlink(&original).expect("unlink original");
+        assert!(stat(&hardlink)
+            .expect("stat hardlink after unlink")
+            .is_file());
+
+        unlink(&hardlink).expect("unlink hardlink");
+    }
+
+    #[test]
+    fn linkat_symlink_follow_flag_controls_dereferencing() {
+        let target = temp_path("linkat_target");
+        let symlink_path = temp_path("linkat_symlink");
+        let via_symlink_itself = temp_path("linkat_of_symlink");
+        let via_dereferenced = temp_path("linkat_of_target");
+        for p in [
+            &target,
+            &symlink_path,
+            &via_symlink_itself,
+            &via_dereferenced,
+        ] {
+            let _ = unlink(p);
+        }
+
+        let f = fd::open(&target, fd::O_WRONLY | fd::O_CREAT | fd::O_TRUNC, 0o600)
+            .expect("open target");
+        fd::close(f).expect("close");
+        symlink(&target, &symlink_path).expect("symlink");
+
+        // Without AT_SYMLINK_FOLLOW: hard-links the symlink itself.
+        linkat(AT_FDCWD, &symlink_path, AT_FDCWD, &via_symlink_itself, 0)
+            .expect("linkat no-follow");
+        assert!(lstat(&via_symlink_itself).expect("lstat").is_symlink());
+
+        // With AT_SYMLINK_FOLLOW: hard-links the regular file it points to.
+        linkat(
+            AT_FDCWD,
+            &symlink_path,
+            AT_FDCWD,
+            &via_dereferenced,
+            AT_SYMLINK_FOLLOW,
+        )
+        .expect("linkat follow");
+        assert!(lstat(&via_dereferenced).expect("lstat").is_file());
+        assert_eq!(
+            stat(&via_dereferenced).expect("stat").stx_ino,
+            stat(&target).expect("stat target").stx_ino
+        );
+
+        for p in [
+            &target,
+            &symlink_path,
+            &via_symlink_itself,
+            &via_dereferenced,
+        ] {
+            unlink(p).expect("unlink");
+        }
+    }
+
+    #[test]
+    fn link_missing_source_is_enoent() {
+        assert_eq!(
+            link(
+                c"/no/such/rusty_libc/path",
+                c"/tmp/rusty_libc_unused_target"
+            ),
+            Err(Errno::ENOENT)
+        );
     }
 
     #[test]
