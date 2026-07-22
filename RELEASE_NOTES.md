@@ -11,6 +11,26 @@ Stay up to date with the latest changes to rusty_libc.
 
 ---
 
+## Round 3, batch 2: utimensat, linkat, getgroups, priority control, pdeathsig — [PR #45](https://github.com/baileyrd/rusty_libc/pull/45)–[#49](https://github.com/baileyrd/rusty_libc/pull/49)
+
+**July 22, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/f566d12...d6e4c83)**
+
+Continuing straight through REVIEW.md's Round 3 list.
+
+**Added**
+- `fs::utimensat`/`utimens` + `UTIME_NOW`/`UTIME_OMIT` — set atime/mtime; nothing existed to back `touch`. ([#24](https://github.com/baileyrd/rusty_libc/issues/24), [PR #45](https://github.com/baileyrd/rusty_libc/pull/45))
+- `fs::linkat`/`link` + `AT_SYMLINK_FOLLOW` — hard links; `fs` covered `symlinkat` but not `ln` (without `-s`). ([#25](https://github.com/baileyrd/rusty_libc/issues/25), [PR #46](https://github.com/baileyrd/rusty_libc/pull/46))
+- `process::ngroups`/`getgroups` — supplementary group IDs for `id`/`groups`-style builtins. ([#27](https://github.com/baileyrd/rusty_libc/issues/27), [PR #47](https://github.com/baileyrd/rusty_libc/pull/47))
+- `process::getpriority`/`setpriority`/`nice` — no priority control existed at all. ([#28](https://github.com/baileyrd/rusty_libc/issues/28), [PR #48](https://github.com/baileyrd/rusty_libc/pull/48))
+- `process::prctl`/`set_pdeathsig`/`get_pdeathsig` — the standard fix for orphaned children surviving a crashed/killed job-control shell. ([#29](https://github.com/baileyrd/rusty_libc/issues/29), [PR #49](https://github.com/baileyrd/rusty_libc/pull/49))
+
+**Fixed**
+- The priority-control PR's own test assumed the crate's test suite always runs as root (true in this repo's dev sandbox, not guaranteed for a consumer's CI): restoring a raised nice value back down needs `CAP_SYS_NICE`, which an unprivileged runner doesn't have. GitHub's own hosted CI runner caught it immediately after merge. Fixed by isolating the whole scenario in a forked child that just exits — carrying the mutation away with it — instead of requiring a privileged restore step. Verified this round and going forward by actually running the test binaries as an unprivileged user (`setpriv --reuid=nobody`) locally, on both arches, not just re-reading the code.
+
+Every syscall number and constant in this batch was checked directly against `/usr/include/{x86_64-linux-gnu/asm,asm-generic}/unistd.h` and `linux/prctl.h` before use, including one genuinely arch-order-swapped pair (`GETPRIORITY`/`SETPRIORITY` are `140`/`141` on x86_64 but `141`/`140` on aarch64) that a memory-only recall would have been an even-odds coin flip on.
+
+---
+
 ## Round 3, batch 1: an aarch64 correctness fix, and five REVIEW.md items — [PR #39](https://github.com/baileyrd/rusty_libc/pull/39)–[#43](https://github.com/baileyrd/rusty_libc/pull/43)
 
 **July 22, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/dfa4e8c...f566d12)**
