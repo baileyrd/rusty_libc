@@ -438,35 +438,55 @@ mod tests {
 
     #[test]
     fn getpriority_setpriority_and_nice_roundtrip() {
-        let original = getpriority(PRIO_PROCESS, 0).expect("getpriority self");
+        use crate::wait;
 
-        // Raising the nice value (lowering priority) is always permitted,
-        // even unprivileged.
-        setpriority(PRIO_PROCESS, 0, original + 3).expect("setpriority raise");
-        assert_eq!(
-            getpriority(PRIO_PROCESS, 0).expect("getpriority after raise"),
-            original + 3
-        );
+        // Isolated in a forked child: setpriority mutates real process
+        // state, and unprivileged callers (e.g. an unprivileged CI runner --
+        // this crate's own suite happens to run as root, but must not
+        // assume every consumer's does) can raise the nice value but not
+        // lower it back down without CAP_SYS_NICE. Rather than require a
+        // restore step this crate can't portably guarantee, let a
+        // throwaway child carry the mutation and report pass/fail through
+        // its exit code; the mutation dies with it. CI runs single-threaded
+        // (see ci.yml) and the child touches only raw syscalls, so this
+        // follows `fork`'s safety note.
+        match unsafe { fork() }.expect("fork") {
+            0 => {
+                let original = match getpriority(PRIO_PROCESS, 0) {
+                    Ok(v) => v,
+                    Err(_) => exit_group(1),
+                };
 
-        // nice() is a relative adjustment over the *current* value, not the
-        // original one.
-        let n = nice(2).expect("nice");
-        assert_eq!(n, original + 5);
-        assert_eq!(
-            getpriority(PRIO_PROCESS, 0).expect("getpriority after nice"),
-            original + 5
-        );
+                // Raising the nice value (lowering priority) is always
+                // permitted, even unprivileged.
+                if setpriority(PRIO_PROCESS, 0, original + 3).is_err() {
+                    exit_group(2);
+                }
+                if getpriority(PRIO_PROCESS, 0) != Ok(original + 3) {
+                    exit_group(3);
+                }
 
-        // Restore -- this crate's test suite runs as root in this
-        // environment, so CAP_SYS_NICE covers lowering it back down too;
-        // an unprivileged run would still have raised-then-restored to the
-        // same net effect up to this point, just unable to go lower than
-        // where it started.
-        setpriority(PRIO_PROCESS, 0, original).expect("setpriority restore");
-        assert_eq!(
-            getpriority(PRIO_PROCESS, 0).expect("getpriority restored"),
-            original
-        );
+                // nice() is a relative adjustment over the *current* value,
+                // not the original one.
+                let n = match nice(2) {
+                    Ok(v) => v,
+                    Err(_) => exit_group(4),
+                };
+                if n != original + 5 {
+                    exit_group(5);
+                }
+                if getpriority(PRIO_PROCESS, 0) != Ok(original + 5) {
+                    exit_group(6);
+                }
+
+                exit_group(0);
+            }
+            pid => {
+                let (_, status) = wait::waitpid(pid, 0).expect("waitpid");
+                assert!(wait::wifexited(status), "child did not exit normally");
+                assert_eq!(wait::wexitstatus(status), 0, "child assertion failed");
+            }
+        }
     }
 
     #[test]
