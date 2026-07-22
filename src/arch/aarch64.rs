@@ -63,6 +63,7 @@ pub mod nr {
     pub const GETEUID: usize = 175;
     pub const GETGID: usize = 176;
     pub const GETEGID: usize = 177;
+    pub const GETGROUPS: usize = 158;
     pub const CLONE: usize = 220;
     pub const EXECVE: usize = 221;
     pub const RENAMEAT2: usize = 276;
