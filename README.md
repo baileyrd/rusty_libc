@@ -61,7 +61,15 @@ faster still. See [bench/README.md](bench/README.md).
 
 See [DESIGN.md](DESIGN.md) for the API surface, the hard problems (signal
 restorer trampoline, fork-vs-threads, kernel-vs-glibc layouts), phasing, and
-testing strategy; [REVIEW.md](REVIEW.md) for the implementation-review log;
-and [RELEASE_NOTES.md](RELEASE_NOTES.md) for a changelog of what shipped and
+testing strategy; [ARCHITECTURE.md](ARCHITECTURE.md) for the module/port
+boundary and data flow; [REVIEW.md](REVIEW.md) for the implementation-review
+log (including tracked-but-not-yet-implemented gaps); and
+[RELEASE_NOTES.md](RELEASE_NOTES.md) for a changelog of what shipped and
 when. The dependency analysis that motivates the crate lives in rush's
 `docs/LIBC_DEPENDENCY_ANALYSIS.md`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow and review
+conventions, [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and
+[SECURITY.md](SECURITY.md) to report a vulnerability privately.
