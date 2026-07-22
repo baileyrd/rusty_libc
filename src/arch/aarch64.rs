@@ -41,6 +41,7 @@ pub mod nr {
     pub const CLOCK_GETTIME: usize = 113;
     pub const PREAD64: usize = 67;
     pub const PWRITE64: usize = 68;
+    pub const FTRUNCATE: usize = 46;
     pub const WAITID: usize = 95;
     pub const KILL: usize = 129;
     pub const RT_SIGSUSPEND: usize = 133;
