@@ -215,3 +215,138 @@ above.
   status with `WNOWAIT` without reaping — useful for job tables), `pread`/
   `pwrite`, `getpgrp()` as a `getpgid(0)` convenience, and
   `EWOULDBLOCK`/`EINPROGRESS` `Errno` aliases.
+
+---
+
+# Round 3 — capabilities assessment
+
+> **Status:** open. This round is a fresh line-by-line review of every module
+> against a job-control shell's actual needs, done after Round 2 and the
+> Track P work (`getdents64`, `pidfd_open`) landed. None of items 27–39 are
+> implemented on this branch; they are proposed additions, not a changelog.
+
+The crate's core (syscall stubs, `Errno`, kernel-layout structs, exec/fork/
+signals/job-control/filesystem) is complete and correct for what it already
+covers. The gaps below are real missing capabilities or correctness edges
+found by reading each module against what still isn't representable —
+ordered roughly by impact.
+
+## H. Process-creation safety and correctness
+
+27. **`clone3(CLONE_PIDFD)`: atomic fork + pidfd, closing the pid-reuse race
+    `pidfd_open` still has.** The current pattern is `fork()` followed by a
+    *separate* `pidfd_open(child_pid)` call. Between those two syscalls the
+    child can exit — under load, with a busy pid space, the kernel can recycle
+    its pid before `pidfd_open` runs, so the call either fails with `ESRCH`
+    (safe but surprising) or, in a worse ordering, resolves a pidfd for a
+    *different* process that reused the number. `clone3` returns the pidfd
+    atomically as part of process creation, closing the window entirely. This
+    finishes what `pidfd_open` started; keep `fork` + `pidfd_open` as the
+    fallback for kernels/paths that don't use `clone3`.
+
+28. **A `vfork`-style clone (`CLONE_VFORK | CLONE_VM`) for the
+    fork-then-immediately-exec case.** `fork`'s own doc comment names the real
+    hazard: a raw `clone(SIGCHLD)` child can inherit an allocator lock held by
+    another parent thread and deadlock before it reaches `exec`, so the safety
+    note pushes "only call when effectively single-threaded" onto the caller.
+    `CLONE_VFORK | CLONE_VM` avoids the hazard by construction — the child
+    shares the parent's address space and the parent is suspended until the
+    child calls `exec`/`_exit`, so there is no independently-mutable,
+    COW-duplicated heap for a stray lock to be held against. This is the
+    technique `posix_spawn` implementations use to make fork-exec safe from a
+    multithreaded parent, and "spawn an external command" is the overwhelming
+    majority of a shell's forks. A `vfork_exec`-shaped primitive (narrower than
+    raw `fork` — never returning control to arbitrary caller code in the
+    child) would let a consumer drop the "must be single-threaded at the fork
+    point" constraint for exactly that path.
+
+29. **`waitpid`/`waitid` discard `rusage`.** Both wrappers pass a null
+    `struct rusage` to `wait4`/`waitid`, throwing away a finished child's
+    user/system CPU time at the syscall boundary — data the kernel already
+    computed for free. A `time` builtin (`real`/`user`/`sys`, bash-style) needs
+    exactly this. Add a `Rusage` struct and an `Option<&mut Rusage>` parameter
+    (or a `waitpid_rusage` sibling) instead of a new syscall.
+
+## I. Filesystem completeness
+
+30. **`fchmodat`/`chmod` and `fchownat`/`chown`.** `fs` has full path mutation
+    (`unlinkat`/`mkdirat`/`renameat2`/`symlinkat`) but no permission or
+    ownership changes at all — no way to back `chmod`/`chown` builtins, or
+    even adjust a mode after creation beyond `open`'s `mode` argument. Both are
+    `*at`-form syscalls, fitting the module's existing convention exactly.
+
+31. **`utimensat`.** No way to set atime/mtime (`touch`, cache-invalidation,
+    `make`-adjacent builtins). Kernel-native, nanosecond resolution, and the
+    modern replacement for `utime`/`utimes`.
+
+32. **`linkat`.** `fs` covers `symlinkat` but not hard links; `ln` (without
+    `-s`) has no primitive to call.
+
+33. **`ftruncate`.** `O_TRUNC` only truncates at open time; there is no way to
+    resize an already-open descriptor.
+
+## J. Credentials, scheduling, and lifecycle
+
+34. **`getgroups`.** Flagged as a maybe in the original Round 2 write-up and
+    never added. `id`/`groups` builtins and supplementary-group-aware
+    permission checks need it; it's a one-shot syscall like the other
+    credential getters already in `process`.
+
+35. **`nice`/`getpriority`/`setpriority`.** No priority control at all — a
+    `nice` builtin, or a shell that backgrounds low-priority jobs, has no
+    primitive to call.
+
+36. **`prctl(PR_SET_PDEATHSIG)`.** No `prctl` at all, so there is no path even
+    for an opt-in caller to ask the kernel to signal a child if its parent
+    dies first — the standard fix for orphaned children surviving a
+    crashed/killed job-control shell.
+
+## K. Time and completeness polish
+
+37. **`alarm`/`setitimer` (or `timerfd_create`).** Nothing generates a
+    timeout signal or fd; `TMOUT`/`read -t`-style features would have to
+    busy-poll `clock_gettime` today. Given `poll` already exists,
+    `timerfd_create` composes better than `SIGALRM` (one more fd in the
+    existing poll loop, no signal-safety concerns) and is worth preferring
+    over classic `alarm`.
+
+38. **`uname`.** No system-identity syscall. Minor, but it's the primitive
+    behind `$OSTYPE`/`$MACHTYPE`-style variables and is a single
+    no-pointer-argument syscall.
+
+39. **`readv`/`writev`.** `fd` has `read`/`write`/`pread`/`pwrite` but no
+    scatter-gather. Not blocking anything today, but composes well with
+    here-doc/redirection assembly that currently has to concatenate into one
+    buffer first.
+
+## L. Event-driven signals — a design question, not a gap
+
+Not a missing primitive, a flag for a decision: the signal story (`sigaction`,
+`sigprocmask`, `sigsuspend`) is complete and correct, but it's also the most
+failure-prone part of anything built on it — signal-safety rules, the
+mask-then-wait race this crate already had to close carefully. `signalfd`
+would let a job-control shell fold `SIGCHLD`/`SIGINT`/`SIGWINCH` delivery into
+the same `poll` loop it already uses for I/O instead of an async-signal-context
+handler at all — no handler, no restorer, no signal-safety constraints on what
+runs when a signal arrives. Given how much of this crate's hardest work (the
+x86_64 restorer trampoline, the signal-storm stress test) exists purely to
+make the handler path *correct*, it's worth asking whether `signalfd` should
+become the primary recommended path for new consumers, with `sigaction` kept
+for handler-based compatibility. Not numbered as a gap — flagging for a
+decision, not proposing to silently add.
+
+## Nits
+
+- `Errno`'s named-constant set (23 consts) is narrower than what `name()`
+  recognizes (~38 codes). The gap matters where it's most likely to bite: a
+  filesystem-heavy consumer will want to match on `ENOSPC`, `EROFS`,
+  `ENAMETOOLONG`, `ENOTEMPTY`, and `ELOOP` by name, and none of the five has a
+  const today. Concretely: `process`'s own `getcwd` test already hardcodes
+  `Err(Errno(34)) // ERANGE` — a magic number of exactly the kind Round 1
+  item 6 eliminated everywhere else, because `ERANGE` has no named const.
+- `execve`/`execveat` have no ergonomic way to build `argv`/`envp` from owned
+  strings; every caller hand-rolls null-terminated pointer arrays. The no_std/
+  no-alloc core is a deliberate constraint, so this isn't a core-crate fix,
+  but the opt-in `std` feature (already the home of `Errno`'s `io::Error`
+  interop) is the natural place for a small `ArgvBuilder`/`EnvBuilder`
+  convenience — nothing forces it into the no_std path.
