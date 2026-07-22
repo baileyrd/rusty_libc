@@ -25,6 +25,7 @@ pub mod nr {
     pub const FACCESSAT: usize = 48;
     pub const FCHMODAT: usize = 53;
     pub const FCHOWNAT: usize = 54;
+    pub const UTIMENSAT: usize = 88;
     pub const CHDIR: usize = 49;
     pub const FCHDIR: usize = 50;
     pub const OPENAT: usize = 56;
