@@ -76,6 +76,53 @@ pub fn getgroups(buf: &mut [u32]) -> Result<&[u32], Errno> {
     Ok(&buf[..n])
 }
 
+// --- scheduling priority ("nice") ------------------------------------------
+
+/// [`getpriority`]/[`setpriority`] `which`: `who` is a pid (`0` = self).
+pub const PRIO_PROCESS: i32 = 0;
+/// [`getpriority`]/[`setpriority`] `which`: `who` is a process-group id (`0` =
+/// the caller's own group).
+pub const PRIO_PGRP: i32 = 1;
+/// [`getpriority`]/[`setpriority`] `which`: `who` is a uid (`0` = the
+/// caller's own real uid).
+pub const PRIO_USER: i32 = 2;
+
+/// Get the scheduling priority ("nice value", `-20`..`19`; lower runs more
+/// favorably) of the process/process-group/user identified by `which`/`who`.
+///
+/// The raw `getpriority(2)` syscall actually returns `20 - nice` (always in
+/// `1..=40`) specifically so it never collides with the `-errno` range that
+/// negative nice values would otherwise fall into; this undoes that bias so
+/// callers get the real nice value back directly.
+pub fn getpriority(which: i32, who: i32) -> Result<i32, Errno> {
+    // SAFETY: plain integer arguments, no memory referenced.
+    let ret = unsafe { syscall2(nr::GETPRIORITY, which as usize, who as usize) };
+    from_ret(ret).map(|raw| 20 - raw as i32)
+}
+
+/// Set the scheduling priority ("nice value") of the process/process-group/
+/// user identified by `which`/`who` to `prio` (`-20`..`19`; out-of-range
+/// values are clamped by the kernel). Raising priority (lowering `prio`
+/// below the caller's current value) requires `CAP_SYS_NICE`; an
+/// unprivileged caller gets `EPERM`/`EACCES`.
+pub fn setpriority(which: i32, who: i32, prio: i32) -> Result<(), Errno> {
+    // SAFETY: plain integer arguments, no memory referenced.
+    let ret = unsafe { syscall3(nr::SETPRIORITY, which as usize, who as usize, prio as usize) };
+    from_ret(ret).map(|_| ())
+}
+
+/// Adjust the calling process's own nice value by `inc` (positive lowers
+/// priority, negative raises it and needs `CAP_SYS_NICE`), returning the
+/// resulting nice value. The classic `nice(2)` convenience over
+/// [`getpriority`]/[`setpriority`] with `PRIO_PROCESS`/`who = 0`.
+pub fn nice(inc: i32) -> Result<i32, Errno> {
+    let current = getpriority(PRIO_PROCESS, 0)?;
+    let target = current + inc;
+    setpriority(PRIO_PROCESS, 0, target)?;
+    // The kernel clamps out-of-range values; report what it actually set.
+    getpriority(PRIO_PROCESS, 0)
+}
+
 /// Set the process group ID of `pid` to `pgid` (both `0` mean "self").
 pub fn setpgid(pid: i32, pgid: i32) -> Result<(), Errno> {
     // SAFETY: plain integer arguments, no memory referenced.
@@ -387,6 +434,51 @@ mod tests {
         // A larger-than-needed buffer still reports exactly `n` entries.
         let mut spare = std::vec![0u32; n + 4];
         assert_eq!(getgroups(&mut spare).expect("getgroups spare").len(), n);
+    }
+
+    #[test]
+    fn getpriority_setpriority_and_nice_roundtrip() {
+        let original = getpriority(PRIO_PROCESS, 0).expect("getpriority self");
+
+        // Raising the nice value (lowering priority) is always permitted,
+        // even unprivileged.
+        setpriority(PRIO_PROCESS, 0, original + 3).expect("setpriority raise");
+        assert_eq!(
+            getpriority(PRIO_PROCESS, 0).expect("getpriority after raise"),
+            original + 3
+        );
+
+        // nice() is a relative adjustment over the *current* value, not the
+        // original one.
+        let n = nice(2).expect("nice");
+        assert_eq!(n, original + 5);
+        assert_eq!(
+            getpriority(PRIO_PROCESS, 0).expect("getpriority after nice"),
+            original + 5
+        );
+
+        // Restore -- this crate's test suite runs as root in this
+        // environment, so CAP_SYS_NICE covers lowering it back down too;
+        // an unprivileged run would still have raised-then-restored to the
+        // same net effect up to this point, just unable to go lower than
+        // where it started.
+        setpriority(PRIO_PROCESS, 0, original).expect("setpriority restore");
+        assert_eq!(
+            getpriority(PRIO_PROCESS, 0).expect("getpriority restored"),
+            original
+        );
+    }
+
+    #[test]
+    fn getpriority_pgrp_and_user_variants_do_not_error() {
+        // 0 means "the caller's own group/uid" for these `which` values.
+        assert!(getpriority(PRIO_PGRP, 0).is_ok());
+        assert!(getpriority(PRIO_USER, 0).is_ok());
+    }
+
+    #[test]
+    fn getpriority_bad_which_is_einval() {
+        assert_eq!(getpriority(9999, 0), Err(Errno::EINVAL));
     }
 
     #[test]

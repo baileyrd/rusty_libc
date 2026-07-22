@@ -43,6 +43,8 @@ pub mod nr {
     pub const GETEUID: usize = 107;
     pub const GETEGID: usize = 108;
     pub const GETGROUPS: usize = 115;
+    pub const GETPRIORITY: usize = 140;
+    pub const SETPRIORITY: usize = 141;
     pub const SETPGID: usize = 109;
     pub const GETPPID: usize = 110;
     pub const SETSID: usize = 112;
