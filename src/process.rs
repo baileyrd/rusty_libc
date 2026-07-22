@@ -373,6 +373,21 @@ mod tests {
         assert_eq!(e, Errno::ENOENT);
     }
 
+    #[test]
+    fn execveat_missing_file_returns_enoent() {
+        // Regression test: `execveat`'s own syscall number, not `execve`'s.
+        // aarch64's EXECVEAT constant was wrong for a while (387, an
+        // unallocated number, instead of the real generic-ABI 281) and no
+        // test called `execveat` directly, so it went uncaught -- `execve`'s
+        // test above exercises a different `nr` constant entirely. This
+        // fails with ENOSYS instead of ENOENT if the syscall number regresses.
+        let path = c"/nonexistent/rusty_libc/prog";
+        let argv: [*const c_char; 2] = [path.as_ptr(), core::ptr::null()];
+        let envp: [*const c_char; 1] = [core::ptr::null()];
+        let e = unsafe { execveat(crate::fd::AT_FDCWD, path, argv.as_ptr(), envp.as_ptr(), 0) };
+        assert_eq!(e, Errno::ENOENT);
+    }
+
     // The success path replaces the child image with a real binary. Gate it to
     // x86_64 so it runs natively; under the aarch64 qemu-user CI job a nested
     // execve of a host binary is not reliably emulated.
