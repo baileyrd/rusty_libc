@@ -97,6 +97,12 @@ impl Errno {
     pub const EINTR: Errno = Errno(4);
     /// I/O error.
     pub const EIO: Errno = Errno(5);
+    /// No such device or address.
+    pub const ENXIO: Errno = Errno(6);
+    /// Argument list too long.
+    pub const E2BIG: Errno = Errno(7);
+    /// Exec format error.
+    pub const ENOEXEC: Errno = Errno(8);
     /// Bad file descriptor.
     pub const EBADF: Errno = Errno(9);
     /// No child processes.
@@ -113,26 +119,58 @@ impl Errno {
     pub const EBUSY: Errno = Errno(16);
     /// File exists.
     pub const EEXIST: Errno = Errno(17);
+    /// Cross-device link (a rename/link source and target are on different
+    /// filesystems/mounts).
+    pub const EXDEV: Errno = Errno(18);
+    /// No such device.
+    pub const ENODEV: Errno = Errno(19);
     /// Not a directory.
     pub const ENOTDIR: Errno = Errno(20);
     /// Is a directory.
     pub const EISDIR: Errno = Errno(21);
     /// Invalid argument.
     pub const EINVAL: Errno = Errno(22);
-    /// Too many open files.
+    /// Too many open files system-wide.
+    pub const ENFILE: Errno = Errno(23);
+    /// Too many open files (per-process limit).
     pub const EMFILE: Errno = Errno(24);
     /// Not a typewriter (not a terminal).
     pub const ENOTTY: Errno = Errno(25);
+    /// Text file busy (tried to write an executable that is currently
+    /// running).
+    pub const ETXTBSY: Errno = Errno(26);
+    /// File too large.
+    pub const EFBIG: Errno = Errno(27);
+    /// No space left on device.
+    pub const ENOSPC: Errno = Errno(28);
     /// Illegal seek.
     pub const ESPIPE: Errno = Errno(29);
+    /// Read-only filesystem.
+    pub const EROFS: Errno = Errno(30);
+    /// Too many links.
+    pub const EMLINK: Errno = Errno(31);
     /// Broken pipe.
     pub const EPIPE: Errno = Errno(32);
+    /// Numerical argument out of domain.
+    pub const EDOM: Errno = Errno(33);
+    /// Numerical result (or buffer, e.g. `getcwd`) out of range.
+    pub const ERANGE: Errno = Errno(34);
+    /// File name too long.
+    pub const ENAMETOOLONG: Errno = Errno(36);
     /// Function not implemented.
     pub const ENOSYS: Errno = Errno(38);
+    /// Directory not empty (`rmdir` on a non-empty directory).
+    pub const ENOTEMPTY: Errno = Errno(39);
+    /// Too many levels of symbolic links.
+    pub const ELOOP: Errno = Errno(40);
     /// Operation would block. On Linux this is the **same** value as
     /// [`EAGAIN`](Self::EAGAIN) (11); provided as an alias for readable
     /// call-site matching.
     pub const EWOULDBLOCK: Errno = Errno(11);
+    /// Connection timed out.
+    pub const ETIMEDOUT: Errno = Errno(110);
+    /// Connection refused.
+    pub const ECONNREFUSED: Errno = Errno(111);
     /// Operation now in progress (e.g. a non-blocking `connect`).
     pub const EINPROGRESS: Errno = Errno(115);
 }
@@ -207,6 +245,26 @@ mod tests {
         assert_eq!(Errno::EWOULDBLOCK, Errno::EAGAIN);
         assert_eq!(Errno::EINPROGRESS, Errno(115));
         assert_eq!(Errno(115).name(), Some("EINPROGRESS"));
+    }
+
+    #[test]
+    fn filesystem_named_constants_match_codes_and_names() {
+        // These five are the ones a filesystem-heavy consumer is most likely
+        // to match on by name (ENOSPC/EROFS/ENAMETOOLONG/ENOTEMPTY/ELOOP);
+        // previously only `name()` recognized them, forcing magic numbers at
+        // call sites (see the `getcwd` test in `process.rs`, which used to
+        // hardcode `Errno(34)` for want of a named `ERANGE`).
+        for (errno, code, name) in [
+            (Errno::ENOSPC, 28, "ENOSPC"),
+            (Errno::EROFS, 30, "EROFS"),
+            (Errno::ERANGE, 34, "ERANGE"),
+            (Errno::ENAMETOOLONG, 36, "ENAMETOOLONG"),
+            (Errno::ENOTEMPTY, 39, "ENOTEMPTY"),
+            (Errno::ELOOP, 40, "ELOOP"),
+        ] {
+            assert_eq!(errno, Errno(code));
+            assert_eq!(errno.name(), Some(name));
+        }
     }
 
     #[test]
