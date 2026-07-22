@@ -358,6 +358,77 @@ pub fn readlink<'a>(path: &CStr, buf: &'a mut [u8]) -> Result<&'a [u8], Errno> {
     readlinkat(AT_FDCWD, path, buf)
 }
 
+// --- fchmodat(2) / fchownat(2) -------------------------------------------
+
+/// Sentinel for [`fchownat`]'s `uid`/`gid`: leave that id unchanged. The
+/// kernel treats `-1` (reinterpreted as `u32::MAX`) this way for both fields
+/// independently, so `chown(path, new_uid, DONT_CHANGE)` changes only the
+/// owner.
+pub const DONT_CHANGE: u32 = u32::MAX;
+
+/// Change the permission bits of the file at `path` relative to `dirfd` to
+/// `mode` (masked by neither the process umask nor anything else — this sets
+/// the mode bits exactly, unlike [`crate::fd::open`]'s `mode` argument).
+///
+/// Unlike [`fchownat`], the raw kernel `fchmodat` syscall takes **no**
+/// `flags` argument — there is no way to change a symlink's own permission
+/// bits through it (symlink permissions are meaningless on Linux and the
+/// kernel ignores them regardless), so this always follows a terminal
+/// symlink.
+pub fn fchmodat(dirfd: i32, path: &CStr, mode: u32) -> Result<(), Errno> {
+    // SAFETY: `path` is a valid nul-terminated C string the kernel only reads.
+    let ret = unsafe {
+        syscall3(
+            nr::FCHMODAT,
+            dirfd as usize,
+            path.as_ptr() as usize,
+            mode as usize,
+        )
+    };
+    from_ret(ret).map(|_| ())
+}
+
+/// Change the permission bits of `path` (relative to the cwd) to `mode`.
+/// Shorthand for [`fchmodat`].
+#[inline]
+pub fn chmod(path: &CStr, mode: u32) -> Result<(), Errno> {
+    fchmodat(AT_FDCWD, path, mode)
+}
+
+/// Change the owner/group of the file at `path` relative to `dirfd`. `flags`
+/// accepts [`AT_SYMLINK_NOFOLLOW`] (operate on a symlink itself rather than
+/// its target) or `0`. Pass [`DONT_CHANGE`] for `uid` or `gid` to leave that
+/// id as-is.
+pub fn fchownat(dirfd: i32, path: &CStr, uid: u32, gid: u32, flags: i32) -> Result<(), Errno> {
+    // SAFETY: `path` is a valid nul-terminated C string the kernel only reads.
+    let ret = unsafe {
+        syscall5(
+            nr::FCHOWNAT,
+            dirfd as usize,
+            path.as_ptr() as usize,
+            uid as usize,
+            gid as usize,
+            flags as usize,
+        )
+    };
+    from_ret(ret).map(|_| ())
+}
+
+/// Change the owner/group of `path` (relative to the cwd), following a
+/// terminal symlink. Shorthand for [`fchownat`] with `flags = 0`.
+#[inline]
+pub fn chown(path: &CStr, uid: u32, gid: u32) -> Result<(), Errno> {
+    fchownat(AT_FDCWD, path, uid, gid, 0)
+}
+
+/// Change the owner/group of the symlink `path` itself (relative to the
+/// cwd), **not** the file it points to. Shorthand for [`fchownat`] with
+/// [`AT_SYMLINK_NOFOLLOW`].
+#[inline]
+pub fn lchown(path: &CStr, uid: u32, gid: u32) -> Result<(), Errno> {
+    fchownat(AT_FDCWD, path, uid, gid, AT_SYMLINK_NOFOLLOW)
+}
+
 // --- getdents64(2) --------------------------------------------------------
 
 /// [`RawDirent::d_type`] tag: the filesystem didn't return a type cheaply —
@@ -547,6 +618,80 @@ mod tests {
 
         rmdir(&b).expect("rmdir b");
         assert_eq!(stat(&b), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn chmod_changes_permission_bits() {
+        let path = temp_path("chmod");
+        let f = fd::open(&path, fd::O_WRONLY | fd::O_CREAT | fd::O_TRUNC, 0o644).expect("open");
+        fd::close(f).expect("close");
+
+        chmod(&path, 0o600).expect("chmod 600");
+        assert_eq!(stat(&path).expect("stat").stx_mode as u32 & 0o777, 0o600);
+
+        chmod(&path, 0o755).expect("chmod 755");
+        assert_eq!(stat(&path).expect("stat").stx_mode as u32 & 0o777, 0o755);
+
+        unlink(&path).expect("unlink");
+    }
+
+    #[test]
+    fn chown_noop_leaves_ownership_unchanged() {
+        let path = temp_path("chown_noop");
+        let f = fd::open(&path, fd::O_WRONLY | fd::O_CREAT | fd::O_TRUNC, 0o600).expect("open");
+        fd::close(f).expect("close");
+
+        let before = stat(&path).expect("stat before");
+        // DONT_CHANGE for both fields is always permitted, even unprivileged
+        // -- nothing is actually being altered, so this exercises the
+        // sentinel without needing CAP_CHOWN.
+        chown(&path, DONT_CHANGE, DONT_CHANGE).expect("chown noop");
+        let after = stat(&path).expect("stat after");
+        assert_eq!(after.stx_uid, before.stx_uid);
+        assert_eq!(after.stx_gid, before.stx_gid);
+
+        unlink(&path).expect("unlink");
+    }
+
+    #[test]
+    fn chown_and_lchown_change_ownership_when_privileged() {
+        // Changing the owner id requires CAP_CHOWN. Always issue the
+        // syscalls (so a regression in argument order/flags still shows up
+        // as an unexpected error), but only assert the resulting metadata
+        // when running privileged -- this crate's own test suite runs as
+        // root in this environment, but a consumer's CI might not.
+        let path = temp_path("chown_priv");
+        let f = fd::open(&path, fd::O_WRONLY | fd::O_CREAT | fd::O_TRUNC, 0o600).expect("open");
+        fd::close(f).expect("close");
+
+        let target_uid = crate::process::getuid().wrapping_add(1);
+        match chown(&path, target_uid, DONT_CHANGE) {
+            Ok(()) => assert_eq!(stat(&path).expect("stat").stx_uid, target_uid),
+            Err(Errno::EPERM) => {} // unprivileged: expected, not a crate bug
+            Err(e) => panic!("unexpected chown error: {e:?}"),
+        }
+
+        let link = temp_path("lchown_priv");
+        let _ = unlink(&link);
+        // The target need not exist: lchown (AT_SYMLINK_NOFOLLOW) touches the
+        // link itself, never resolving it.
+        symlink(c"/does/not/need/to/exist", &link).expect("symlink");
+        match lchown(&link, target_uid, DONT_CHANGE) {
+            Ok(()) => assert_eq!(lstat(&link).expect("lstat").stx_uid, target_uid),
+            Err(Errno::EPERM) => {}
+            Err(e) => panic!("unexpected lchown error: {e:?}"),
+        }
+
+        unlink(&path).expect("unlink");
+        unlink(&link).expect("unlink link");
+    }
+
+    #[test]
+    fn chmod_missing_path_is_enoent() {
+        assert_eq!(
+            chmod(c"/no/such/rusty_libc/path", 0o600),
+            Err(Errno::ENOENT)
+        );
     }
 
     #[test]
