@@ -11,6 +11,39 @@ Stay up to date with the latest changes to rusty_libc.
 
 ---
 
+## Capabilities assessment + standard governance scaffolding — [PR #36](https://github.com/baileyrd/rusty_libc/pull/36)
+
+**July 22, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/dfa4e8c...50bf31b)**
+
+**Added**
+- `REVIEW.md` Round 3: a fresh line-by-line capabilities assessment against
+  every module, done after Round 2 and the Track P work landed. Filed as
+  [issues #20–#35](https://github.com/baileyrd/rusty_libc/issues?q=is%3Aissue):
+  `clone3(CLONE_PIDFD)` to close the `fork`+`pidfd_open` pid-reuse race, a
+  `vfork`-style clone for the fork-then-exec path, `rusage` reporting on
+  `waitpid`/`waitid`, `chmod`/`chown`/`utimensat`/`linkat`/`ftruncate` in
+  `fs`, `getgroups`/`nice`-family/`prctl(PR_SET_PDEATHSIG)` in `process`, a
+  timeout primitive, `uname`, `readv`/`writev`, plus an open design question
+  on `signalfd` vs. `sigaction` and two `Errno`/`execve`-ergonomics nits.
+  Assessment only — none of the items are implemented yet.
+- Standard governance scaffolding via the `repo-config` skill: PR templates
+  (feature/bug_fix/docs/chore), issue templates, `CONTRIBUTING.md`,
+  `CODE_OF_CONDUCT.md`, `SECURITY.md`, `ARCHITECTURE.md` (filled in for this
+  crate's actual arch-vs-syscall-subsystem boundary and non-goals, not left
+  as template scaffolding), and a seed ADR log at `docs/adr/`.
+
+**Changed**
+- README now links `ARCHITECTURE.md` and the new `CONTRIBUTING.md`/
+  `CODE_OF_CONDUCT.md`/`SECURITY.md`.
+
+Deliberately **not** added: a generic `ci-rust.yml` (the existing
+`.github/workflows/ci.yml` is more thorough and its `--test-threads=1`
+requirement is load-bearing for the fork/signal tests — a generic template
+would have both duplicated and broken it) and `CHANGELOG.md` (this file
+already serves that role).
+
+---
+
 ## `getdents64` + `pidfd_open` — [PR #19](https://github.com/baileyrd/rusty_libc/pull/19)
 
 **July 19, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/40a8bd1...a373607)**
