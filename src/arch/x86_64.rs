@@ -56,6 +56,7 @@ pub mod nr {
     pub const MKDIRAT: usize = 258;
     pub const UNLINKAT: usize = 263;
     pub const SYMLINKAT: usize = 266;
+    pub const LINKAT: usize = 265;
     pub const READLINKAT: usize = 267;
     pub const FACCESSAT: usize = 269;
     pub const FCHOWNAT: usize = 260;
