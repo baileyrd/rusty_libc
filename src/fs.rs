@@ -429,6 +429,55 @@ pub fn lchown(path: &CStr, uid: u32, gid: u32) -> Result<(), Errno> {
     fchownat(AT_FDCWD, path, uid, gid, AT_SYMLINK_NOFOLLOW)
 }
 
+// --- utimensat(2) ---------------------------------------------------------
+
+/// Sentinel for a [`crate::time::Timespec`] passed to [`utimensat`]/[`utimens`]: set this
+/// timestamp to the current time (`CLOCK_REALTIME` at the moment the syscall
+/// runs), ignoring [`crate::time::Timespec::tv_sec`].
+pub const UTIME_NOW: i64 = (1 << 30) - 1;
+/// Sentinel for a [`crate::time::Timespec`] passed to [`utimensat`]/[`utimens`]: leave
+/// this timestamp unchanged.
+pub const UTIME_OMIT: i64 = (1 << 30) - 2;
+
+/// Set the access and modification times of the file at `path` relative to
+/// `dirfd`. `times` is `[atime, mtime]`; pass `None` to set both to the
+/// current time (equivalent to `[UTIME_NOW, UTIME_NOW]`), or build the array
+/// yourself using [`UTIME_NOW`]/[`UTIME_OMIT`] as either timestamp's
+/// `tv_nsec` to set-to-now or leave-unchanged that one independently.
+/// `flags` accepts [`AT_SYMLINK_NOFOLLOW`] to touch a symlink itself.
+pub fn utimensat(
+    dirfd: i32,
+    path: &CStr,
+    times: Option<[crate::time::Timespec; 2]>,
+    flags: i32,
+) -> Result<(), Errno> {
+    let ptr = match &times {
+        Some(t) => t.as_ptr() as usize,
+        None => 0,
+    };
+    // SAFETY: `path` is a valid nul-terminated C string the kernel only
+    // reads; `times` is either null (meaning "set both to now") or a valid
+    // 2-element `timespec` array the kernel only reads.
+    let ret = unsafe {
+        syscall4(
+            nr::UTIMENSAT,
+            dirfd as usize,
+            path.as_ptr() as usize,
+            ptr,
+            flags as usize,
+        )
+    };
+    from_ret(ret).map(|_| ())
+}
+
+/// Set the access/modification times of `path` (relative to the cwd),
+/// following a terminal symlink. Shorthand for [`utimensat`] with
+/// `flags = 0`.
+#[inline]
+pub fn utimens(path: &CStr, times: Option<[crate::time::Timespec; 2]>) -> Result<(), Errno> {
+    utimensat(AT_FDCWD, path, times, 0)
+}
+
 // --- getdents64(2) --------------------------------------------------------
 
 /// [`RawDirent::d_type`] tag: the filesystem didn't return a type cheaply —
@@ -690,6 +739,123 @@ mod tests {
     fn chmod_missing_path_is_enoent() {
         assert_eq!(
             chmod(c"/no/such/rusty_libc/path", 0o600),
+            Err(Errno::ENOENT)
+        );
+    }
+
+    #[test]
+    fn utimens_sets_explicit_atime_and_mtime() {
+        use crate::time::Timespec;
+
+        let path = temp_path("utimens_explicit");
+        let f = fd::open(&path, fd::O_WRONLY | fd::O_CREAT | fd::O_TRUNC, 0o600).expect("open");
+        fd::close(f).expect("close");
+
+        // An arbitrary, exact past timestamp -- easy to tell apart from "now".
+        let atime = Timespec {
+            tv_sec: 1_000_000,
+            tv_nsec: 123_000,
+        };
+        let mtime = Timespec {
+            tv_sec: 2_000_000,
+            tv_nsec: 456_000,
+        };
+        utimens(&path, Some([atime, mtime])).expect("utimens explicit");
+
+        let st = stat(&path).expect("stat");
+        assert_eq!(st.stx_atime.tv_sec, atime.tv_sec);
+        assert_eq!(st.stx_atime.tv_nsec as i64, atime.tv_nsec);
+        assert_eq!(st.stx_mtime.tv_sec, mtime.tv_sec);
+        assert_eq!(st.stx_mtime.tv_nsec as i64, mtime.tv_nsec);
+
+        unlink(&path).expect("unlink");
+    }
+
+    #[test]
+    fn utimens_none_sets_both_to_now() {
+        let path = temp_path("utimens_now");
+        let f = fd::open(&path, fd::O_WRONLY | fd::O_CREAT | fd::O_TRUNC, 0o600).expect("open");
+        fd::close(f).expect("close");
+
+        // Back-date it first so "now" is unambiguously later.
+        let old = crate::time::Timespec {
+            tv_sec: 1_000_000,
+            tv_nsec: 0,
+        };
+        utimens(&path, Some([old, old])).expect("utimens backdate");
+
+        let before = crate::time::clock_gettime(crate::time::CLOCK_REALTIME).expect("clock");
+        utimens(&path, None).expect("utimens now");
+        let after = crate::time::clock_gettime(crate::time::CLOCK_REALTIME).expect("clock");
+
+        let st = stat(&path).expect("stat");
+        assert!(st.stx_mtime.tv_sec >= before.tv_sec && st.stx_mtime.tv_sec <= after.tv_sec + 1);
+        assert!(st.stx_atime.tv_sec >= before.tv_sec && st.stx_atime.tv_sec <= after.tv_sec + 1);
+
+        unlink(&path).expect("unlink");
+    }
+
+    #[test]
+    fn utimens_omit_leaves_one_timestamp_unchanged() {
+        use crate::time::Timespec;
+
+        let path = temp_path("utimens_omit");
+        let f = fd::open(&path, fd::O_WRONLY | fd::O_CREAT | fd::O_TRUNC, 0o600).expect("open");
+        fd::close(f).expect("close");
+
+        let baseline = Timespec {
+            tv_sec: 1_500_000,
+            tv_nsec: 0,
+        };
+        utimens(&path, Some([baseline, baseline])).expect("utimens baseline");
+
+        // Change only mtime; OMIT on atime must leave it exactly as set above.
+        let new_mtime = Timespec {
+            tv_sec: 3_000_000,
+            tv_nsec: 0,
+        };
+        let omit = Timespec {
+            tv_sec: 0,
+            tv_nsec: UTIME_OMIT,
+        };
+        utimens(&path, Some([omit, new_mtime])).expect("utimens omit atime");
+
+        let st = stat(&path).expect("stat");
+        assert_eq!(
+            st.stx_atime.tv_sec, baseline.tv_sec,
+            "atime must be omitted"
+        );
+        assert_eq!(st.stx_mtime.tv_sec, new_mtime.tv_sec);
+
+        unlink(&path).expect("unlink");
+    }
+
+    #[test]
+    fn utimensat_nofollow_touches_the_symlink_not_its_target() {
+        use crate::time::Timespec;
+
+        let link = temp_path("utimens_symlink");
+        let _ = unlink(&link);
+        // Target need not exist: AT_SYMLINK_NOFOLLOW never resolves it.
+        symlink(c"/does/not/need/to/exist", &link).expect("symlink");
+
+        let mtime = Timespec {
+            tv_sec: 1_234_567,
+            tv_nsec: 0,
+        };
+        utimensat(AT_FDCWD, &link, Some([mtime, mtime]), AT_SYMLINK_NOFOLLOW)
+            .expect("utimensat nofollow");
+
+        let st = lstat(&link).expect("lstat");
+        assert_eq!(st.stx_mtime.tv_sec, mtime.tv_sec);
+
+        unlink(&link).expect("unlink link");
+    }
+
+    #[test]
+    fn utimens_missing_path_is_enoent() {
+        assert_eq!(
+            utimens(c"/no/such/rusty_libc/path", None),
             Err(Errno::ENOENT)
         );
     }
