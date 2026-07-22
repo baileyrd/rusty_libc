@@ -418,6 +418,19 @@ pub fn lseek(fd: i32, offset: i64, whence: i32) -> Result<i64, Errno> {
     from_ret(ret).map(|v| v as i64)
 }
 
+/// Resize the open file `fd` to exactly `length` bytes: extends it with
+/// zero bytes if it was shorter, discards data past `length` if it was
+/// longer. Does **not** move the file's current offset.
+///
+/// Unlike [`O_TRUNC`], which only truncates a file at `open` time, this
+/// resizes an already-open descriptor.
+pub fn ftruncate(fd: i32, length: i64) -> Result<(), Errno> {
+    // On 64-bit Linux `ftruncate` takes a 64-bit `off_t` directly.
+    // SAFETY: plain integer arguments.
+    let ret = unsafe { syscall2(nr::FTRUNCATE, fd as usize, length as usize) };
+    from_ret(ret).map(|_| ())
+}
+
 /// Crate-internal `ioctl(2)` shim for the terminal queries.
 ///
 /// # Safety
@@ -664,5 +677,37 @@ mod tests {
         assert_eq!(lseek(fd, 0, SEEK_END).expect("lseek end"), 13);
 
         close(fd).expect("close");
+    }
+
+    #[test]
+    fn ftruncate_shrinks_and_grows_an_open_fd() {
+        let fd = memfd_create(c"rusty_libc_ftruncate", MFD_CLOEXEC).expect("memfd_create");
+        write_all(fd, b"hello world").expect("write_all"); // 11 bytes
+
+        // Shrink: SEEK_END now reports the smaller size, and the surviving
+        // bytes are unchanged.
+        ftruncate(fd, 5).expect("ftruncate shrink");
+        assert_eq!(lseek(fd, 0, SEEK_END).expect("lseek end"), 5);
+        assert_eq!(lseek(fd, 0, SEEK_SET).expect("lseek set"), 0);
+        let mut buf = [0u8; 5];
+        assert_eq!(read(fd, &mut buf).expect("read"), 5);
+        assert_eq!(&buf, b"hello");
+
+        // Grow: extends with zero bytes, and (unlike SEEK_END, which moves
+        // the offset as a side effect of reporting the size) does not touch
+        // the current offset -- still 5 here, right after the shrink read.
+        ftruncate(fd, 10).expect("ftruncate grow");
+        assert_eq!(lseek(fd, 0, SEEK_CUR).expect("lseek cur"), 5);
+        let mut tail = [0xffu8; 5];
+        assert_eq!(read(fd, &mut tail).expect("read tail"), 5);
+        assert_eq!(tail, [0u8; 5], "grown region must be zero-filled");
+        assert_eq!(lseek(fd, 0, SEEK_END).expect("lseek end"), 10);
+
+        close(fd).expect("close");
+    }
+
+    #[test]
+    fn ftruncate_bad_fd_is_ebadf() {
+        assert_eq!(ftruncate(-1, 0), Err(Errno::EBADF));
     }
 }

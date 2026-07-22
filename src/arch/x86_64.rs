@@ -23,6 +23,7 @@ pub mod nr {
     pub const IOCTL: usize = 16;
     pub const PREAD64: usize = 17;
     pub const PWRITE64: usize = 18;
+    pub const FTRUNCATE: usize = 77;
     pub const NANOSLEEP: usize = 35;
     pub const DUP: usize = 32;
     pub const DUP2: usize = 33;
