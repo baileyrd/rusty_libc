@@ -200,6 +200,66 @@ pub unsafe fn execveat(
     }
 }
 
+/// A null-terminated array of C-string pointers, owned and kept alive
+/// alongside it — the shape [`execve`]/[`execveat`] need for both `argv` and
+/// `envp` (they are structurally identical: a NUL-terminated list of C
+/// strings). Requires the opt-in `std` feature; the `no_std` core has no
+/// allocator to build this with, so callers there still hand-roll the arrays
+/// as documented on [`execve`].
+///
+/// ```rust,ignore
+/// use rusty_libc::process::CStrArray;
+///
+/// let argv = CStrArray::new(["/bin/sh", "-c", "exit 0"]).expect("no interior NUL");
+/// let envp = CStrArray::new(["PATH=/bin"]).expect("no interior NUL");
+/// unsafe { rusty_libc::process::execve(c"/bin/sh", argv.as_ptr(), envp.as_ptr()) };
+/// ```
+// Gated on `any(feature = "std", test)`, not just `feature = "std"`, matching
+// `Errno`'s `std::io::Error` interop impl: the built-in test harness always
+// links `std` (see the crate's top-level `cfg_attr(not(any(test, feature =
+// "std")), no_std)`), so this lets the type's own tests run under a plain
+// `cargo test` instead of only being compile-checked by the separate "Build
+// (std feature)" CI step.
+#[cfg(any(feature = "std", test))]
+pub struct CStrArray {
+    // Kept alive so `ptrs` stays valid; never read directly after construction.
+    _owned: std::vec::Vec<std::ffi::CString>,
+    // `_owned`'s pointers, plus a trailing null -- this is what `as_ptr` hands
+    // to `execve`/`execveat`.
+    ptrs: std::vec::Vec<*const c_char>,
+}
+
+#[cfg(any(feature = "std", test))]
+impl CStrArray {
+    /// Build a null-terminated C-string array from owned strings (or byte
+    /// slices), copying each into a fresh [`std::ffi::CString`]. Fails if any
+    /// input contains an interior NUL byte (which cannot be represented as a
+    /// C string).
+    pub fn new<I, S>(strings: I) -> Result<Self, std::ffi::NulError>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<std::vec::Vec<u8>>,
+    {
+        let owned = strings
+            .into_iter()
+            .map(std::ffi::CString::new)
+            .collect::<Result<std::vec::Vec<_>, _>>()?;
+        let mut ptrs: std::vec::Vec<*const c_char> = owned.iter().map(|s| s.as_ptr()).collect();
+        ptrs.push(core::ptr::null());
+        Ok(CStrArray {
+            _owned: owned,
+            ptrs,
+        })
+    }
+
+    /// The null-terminated pointer array, ready to pass as `execve`'s `argv`
+    /// or `envp`. Valid for as long as `self` is alive.
+    #[inline]
+    pub fn as_ptr(&self) -> *const *const c_char {
+        self.ptrs.as_ptr()
+    }
+}
+
 /// Change the calling process's working directory to `path`.
 pub fn chdir(path: &CStr) -> Result<(), Errno> {
     // SAFETY: `path` is a valid nul-terminated C string the kernel only reads.
@@ -415,6 +475,49 @@ mod tests {
                 let (_, status) = wait::waitpid(pid, 0).expect("waitpid");
                 assert!(wait::wifexited(status));
                 assert_eq!(wait::wexitstatus(status), 7);
+            }
+        }
+    }
+
+    #[test]
+    fn cstrarray_builds_a_null_terminated_pointer_array() {
+        let argv = CStrArray::new(["/bin/sh", "-c", "exit 0"]).expect("no interior NUL");
+        // SAFETY: reading back what `new` just wrote, purely to check shape.
+        let ptrs = unsafe { core::slice::from_raw_parts(argv.as_ptr(), 4) };
+        assert!(!ptrs[0].is_null());
+        assert!(!ptrs[1].is_null());
+        assert!(!ptrs[2].is_null());
+        assert!(ptrs[3].is_null(), "must be null-terminated");
+
+        let s0 = unsafe { CStr::from_ptr(ptrs[0]) };
+        assert_eq!(s0.to_bytes(), b"/bin/sh");
+    }
+
+    #[test]
+    fn cstrarray_rejects_interior_nul() {
+        assert!(CStrArray::new(["bad\0arg"]).is_err());
+    }
+
+    // Gated to x86_64 for the same reason as `execve_replaces_child_image`:
+    // a nested execve of a host binary isn't reliably emulated under the
+    // aarch64 qemu-user CI job.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn cstrarray_is_usable_end_to_end_with_execve() {
+        use crate::wait;
+
+        let argv = CStrArray::new(["/bin/sh", "-c", "exit 9"]).expect("no interior NUL");
+        let envp = CStrArray::new::<_, &str>([]).expect("no interior NUL");
+
+        match unsafe { fork() }.expect("fork") {
+            0 => {
+                unsafe { execve(c"/bin/sh", argv.as_ptr(), envp.as_ptr()) };
+                exit_group(127); // only reached if exec failed
+            }
+            pid => {
+                let (_, status) = wait::waitpid(pid, 0).expect("waitpid");
+                assert!(wait::wifexited(status));
+                assert_eq!(wait::wexitstatus(status), 9);
             }
         }
     }
