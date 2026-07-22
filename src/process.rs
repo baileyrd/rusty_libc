@@ -335,7 +335,7 @@ mod tests {
 
         // A too-small buffer yields ERANGE.
         let mut tiny = [0u8; 1];
-        assert_eq!(getcwd(&mut tiny), Err(Errno(34))); // ERANGE
+        assert_eq!(getcwd(&mut tiny), Err(Errno::ERANGE));
 
         // Restore the original working directory.
         let back = std::ffi::CString::new(saved).unwrap();
