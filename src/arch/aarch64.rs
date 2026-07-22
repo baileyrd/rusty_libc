@@ -23,6 +23,8 @@ pub mod nr {
     pub const FCNTL: usize = 25;
     pub const IOCTL: usize = 29;
     pub const FACCESSAT: usize = 48;
+    pub const FCHMODAT: usize = 53;
+    pub const FCHOWNAT: usize = 54;
     pub const CHDIR: usize = 49;
     pub const FCHDIR: usize = 50;
     pub const OPENAT: usize = 56;

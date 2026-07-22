@@ -58,6 +58,8 @@ pub mod nr {
     pub const SYMLINKAT: usize = 266;
     pub const READLINKAT: usize = 267;
     pub const FACCESSAT: usize = 269;
+    pub const FCHOWNAT: usize = 260;
+    pub const FCHMODAT: usize = 268;
     pub const DUP3: usize = 292;
     pub const PIPE2: usize = 293;
     pub const PRLIMIT64: usize = 302;
