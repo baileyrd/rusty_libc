@@ -9,7 +9,7 @@
 //! forms keeps both arches identical.
 
 use crate::arch::nr;
-use crate::arch::{from_ret, syscall3, syscall4, syscall5, Errno};
+use crate::arch::{from_ret, syscall2, syscall3, syscall4, syscall5, Errno};
 use core::ffi::CStr;
 
 pub use crate::fd::AT_FDCWD;
@@ -429,6 +429,18 @@ pub fn fchmodat(dirfd: i32, path: &CStr, mode: u32) -> Result<(), Errno> {
 #[inline]
 pub fn chmod(path: &CStr, mode: u32) -> Result<(), Errno> {
     fchmodat(AT_FDCWD, path, mode)
+}
+
+/// Resize the file at `path` to exactly `length` bytes: extends it with
+/// zero bytes if it was shorter, discards data past `length` if it was
+/// longer. Path-based sibling of [`crate::fd::ftruncate`] (fd-based); there
+/// is no `truncateat` -- open the file and use `ftruncate` if a `dirfd`-
+/// relative path is needed.
+pub fn truncate(path: &CStr, length: i64) -> Result<(), Errno> {
+    // On 64-bit Linux `truncate` takes a 64-bit `off_t` directly.
+    // SAFETY: `path` is a valid nul-terminated C string the kernel only reads.
+    let ret = unsafe { syscall2(nr::TRUNCATE, path.as_ptr() as usize, length as usize) };
+    from_ret(ret).map(|_| ())
 }
 
 /// Change the owner/group of the file at `path` relative to `dirfd`. `flags`
@@ -872,6 +884,28 @@ mod tests {
             chmod(c"/no/such/rusty_libc/path", 0o600),
             Err(Errno::ENOENT)
         );
+    }
+
+    #[test]
+    fn truncate_shrinks_and_grows_a_path() {
+        let path = temp_path("truncate");
+        let f = fd::open(&path, fd::O_WRONLY | fd::O_CREAT | fd::O_TRUNC, 0o600).expect("open");
+        fd::write_all(f, b"0123456789").expect("write");
+        fd::close(f).expect("close");
+        assert_eq!(stat(&path).expect("stat").stx_size, 10);
+
+        truncate(&path, 4).expect("truncate shrink");
+        assert_eq!(stat(&path).expect("stat").stx_size, 4);
+
+        truncate(&path, 20).expect("truncate grow");
+        assert_eq!(stat(&path).expect("stat").stx_size, 20);
+
+        unlink(&path).expect("unlink");
+    }
+
+    #[test]
+    fn truncate_missing_path_is_enoent() {
+        assert_eq!(truncate(c"/no/such/rusty_libc/path", 0), Err(Errno::ENOENT));
     }
 
     #[test]
