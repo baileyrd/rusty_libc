@@ -77,34 +77,38 @@ the format doc's instruction to list only surviving candidates. What
 follows is what's left after all of that filtering: real syscalls, not
 previously declined, with a plausible job-control-shell use case.
 
+> **Status:** all 16 candidates below (12 recommended + 4 lower-confidence)
+> have been filed as `parity-gap` issues, at the user's explicit request to
+> file the full list rather than trim it at this checkpoint.
+
 ## Candidates
 
-| Symbol | Category | Source | Platforms | Reference | Breaking? | Est. size | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| `eventfd`, `eventfd_read`, `eventfd_write` | fn | diff | linux | `libc::eventfd` | no | M | The third of the `*fd` event-notification family this crate already embraced (`signalfd` via ADR-0002, `timerfd_create`) — `eventfd` is the missing sibling: a simple counter an event loop can `poll`/write/read, useful for cross-thread or self-pipe-style wakeups without a pipe pair. New small module, matching `rand.rs`/`mmap.rs`'s one-file-per-primitive pattern. |
-| `epoll_create1`, `epoll_ctl`, `epoll_wait`, `epoll_pwait`, `epoll_pwait2` | fn | diff | linux | `libc::epoll_wait` | no | L | Scalable successor to `poll` for many-fd scenarios (a job-control shell tracking many background jobs' pipes/pidfds). `epoll_event`'s kernel layout is `#[repr(packed)]` on x86_64 specifically (differs in alignment from the natural layout) — exactly the kind of per-arch layout hazard this crate already handles carefully elsewhere (e.g. `wait::Siginfo`'s union offsets), but worth flagging as the reason this is sized L rather than M. |
-| `getpeername`, `getsockname` | fn | diff | linux | `libc::getpeername` | no | S | Direct siblings of the just-shipped `socket` module's `bind_in`/`connect_in`/`accept4_in` — querying a socket's local/remote endpoint after `connect`/`accept`. Follows the exact same `SockAddrIn`/`SockAddrIn6` out-parameter pattern already established. |
-| `getresuid`, `getresgid` | fn | diff | linux | `libc::getresuid` | no | S | The getter half of `setresuid`/`setresgid` (issue #64) — only the setters shipped. Direct parallel, same struct-free three-`u32`-out-param shape. |
-| `gettid` | fn | diff | linux | `libc::gettid` | no | S | Kernel thread id (`SYS_gettid`), distinct from `getpid()` (thread-group id) — currently absent entirely from `process.rs`. Single-syscall, no args. |
-| `close_range` | fn | diff | linux | `libc::close_range` | no | S | Linux 5.9+ bulk fd-range close — closes `[first, last]` in one syscall instead of a manual loop, useful for fd cleanup after `fork`/before `exec` in code that isn't using `vfork_exec_redirected`'s asm-loop approach. |
-| `fsync`, `fdatasync` | fn | diff | linux | `libc::fsync` | no | S | Durability syscalls, single fd arg each. Plausible use: a `sync`-style builtin, or robust-write helpers. |
-| `truncate` | fn | diff | linux | `libc::truncate` | no | S | Path-based sibling of the already-shipped `fd::ftruncate` (fd-based) — same shape as the `stat`/`fstat` and `chmod`/`fchmod` path-vs-fd pairs `fs.rs` already has throughout. |
-| `clock_getres` | fn | diff | linux | `libc::clock_getres` | no | S | Sibling of the already-shipped `clock_gettime`/`clock_nanosleep` — queries a clock's resolution. Same `Timespec` out-param shape already used everywhere in `time.rs`. |
-| `preadv`, `pwritev` | fn | diff | linux | `libc::preadv` | no | M | Vectored *and* positional I/O — `fd.rs` has `readv`/`writev` (vectored, no offset) and `pread`/`pwrite` (positional, single buffer) but not the combination. Real gap, but narrow use case (rarely needed outside specialized I/O code). |
-| `madvise`, `mlock`, `munlock`, `msync` | fn | diff | linux | `libc::madvise` | no | M | Siblings of the just-shipped `mmap`/`munmap`/`mprotect` trio — REVIEW.md item 48 explicitly scoped that PR to "the basic trio," implying the rest of the memory-mapping family was a deliberate, named deferral rather than an oversight. Flagging here since the diff surfaces it independently, but recommend treating this the same as item 48's own framing: no known consumer need yet, lower priority than the rest of this table. |
-| `tcflow`, `tcsendbreak`, `tcgetsid` | fn | diff | linux | `libc::tcflow` | no | S | Real `termios`-family ioctls (`TCXONC`/`TCSBRK`/`TIOCGSID`) not yet covered — `termios.rs` has `tcgetattr`/`tcsetattr`/`tcflush`/`tcdrain`/`tcgetpgrp`/`tcsetpgrp` but not these three. Rounds out the module's existing terminal-control surface. |
+| Symbol | Category | Source | Platforms | Reference | Breaking? | Est. size | Issue | Notes |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `eventfd`, `eventfd_read`, `eventfd_write` | fn | diff | linux | `libc::eventfd` | no | M | #88 | The third of the `*fd` event-notification family this crate already embraced (`signalfd` via ADR-0002, `timerfd_create`) — `eventfd` is the missing sibling: a simple counter an event loop can `poll`/write/read, useful for cross-thread or self-pipe-style wakeups without a pipe pair. New small module, matching `rand.rs`/`mmap.rs`'s one-file-per-primitive pattern. |
+| `epoll_create1`, `epoll_ctl`, `epoll_wait`, `epoll_pwait`, `epoll_pwait2` | fn | diff | linux | `libc::epoll_wait` | no | L | #89 | Scalable successor to `poll` for many-fd scenarios (a job-control shell tracking many background jobs' pipes/pidfds). `epoll_event`'s kernel layout is `#[repr(packed)]` on x86_64 specifically (differs in alignment from the natural layout) — exactly the kind of per-arch layout hazard this crate already handles carefully elsewhere (e.g. `wait::Siginfo`'s union offsets), but worth flagging as the reason this is sized L rather than M. |
+| `getpeername`, `getsockname` | fn | diff | linux | `libc::getpeername` | no | S | #90 | Direct siblings of the just-shipped `socket` module's `bind_in`/`connect_in`/`accept4_in` — querying a socket's local/remote endpoint after `connect`/`accept`. Follows the exact same `SockAddrIn`/`SockAddrIn6` out-parameter pattern already established. |
+| `getresuid`, `getresgid` | fn | diff | linux | `libc::getresuid` | no | S | #91 | The getter half of `setresuid`/`setresgid` (issue #64) — only the setters shipped. Direct parallel, same struct-free three-`u32`-out-param shape. |
+| `gettid` | fn | diff | linux | `libc::gettid` | no | S | #92 | Kernel thread id (`SYS_gettid`), distinct from `getpid()` (thread-group id) — currently absent entirely from `process.rs`. Single-syscall, no args. |
+| `close_range` | fn | diff | linux | `libc::close_range` | no | S | #93 | Linux 5.9+ bulk fd-range close — closes `[first, last]` in one syscall instead of a manual loop, useful for fd cleanup after `fork`/before `exec` in code that isn't using `vfork_exec_redirected`'s asm-loop approach. |
+| `fsync`, `fdatasync` | fn | diff | linux | `libc::fsync` | no | S | #94 | Durability syscalls, single fd arg each. Plausible use: a `sync`-style builtin, or robust-write helpers. |
+| `truncate` | fn | diff | linux | `libc::truncate` | no | S | #95 | Path-based sibling of the already-shipped `fd::ftruncate` (fd-based) — same shape as the `stat`/`fstat` and `chmod`/`fchmod` path-vs-fd pairs `fs.rs` already has throughout. |
+| `clock_getres` | fn | diff | linux | `libc::clock_getres` | no | S | #96 | Sibling of the already-shipped `clock_gettime`/`clock_nanosleep` — queries a clock's resolution. Same `Timespec` out-param shape already used everywhere in `time.rs`. |
+| `preadv`, `pwritev` | fn | diff | linux | `libc::preadv` | no | M | #97 | Vectored *and* positional I/O — `fd.rs` has `readv`/`writev` (vectored, no offset) and `pread`/`pwrite` (positional, single buffer) but not the combination. Real gap, but narrow use case (rarely needed outside specialized I/O code). |
+| `madvise`, `mlock`, `munlock`, `msync` | fn | diff | linux | `libc::madvise` | no | M | #98 | Siblings of the just-shipped `mmap`/`munmap`/`mprotect` trio — REVIEW.md item 48 explicitly scoped that PR to "the basic trio," implying the rest of the memory-mapping family was a deliberate, named deferral rather than an oversight. Flagging here since the diff surfaces it independently, but recommend treating this the same as item 48's own framing: no known consumer need yet, lower priority than the rest of this table. |
+| `tcflow`, `tcsendbreak`, `tcgetsid` | fn | diff | linux | `libc::tcflow` | no | S | #99 | Real `termios`-family ioctls (`TCXONC`/`TCSBRK`/`TIOCGSID`) not yet covered — `termios.rs` has `tcgetattr`/`tcsetattr`/`tcflush`/`tcdrain`/`tcgetpgrp`/`tcsetpgrp` but not these three. Rounds out the module's existing terminal-control surface. |
 
-## Lower-confidence, not recommended for issues this round
+## Lower-confidence candidates (filed anyway, at the user's request)
 
-Flagging for visibility, not filing — same "no known consumer need" bar
-Round 4 already applied to `flock`/`chroot`/`sendfile`:
+Originally flagged for visibility only, not filing — same "no known consumer
+need" bar Round 4 already applied to `flock`/`chroot`/`sendfile`. Filed as
+issues anyway per an explicit user instruction to open the full candidate
+list rather than trim at this checkpoint; the "no confirmed need" caveat
+below still applies and should inform triage/priority on each issue.
 
-- `inotify_add_watch`/`inotify_init`/`inotify_init1`/`inotify_rm_watch` —
-  real syscalls, but no confirmed shell use case surfaced by reading `rush`.
-- `sysinfo` — real syscall (uptime/load/mem stats), speculative `uptime`/
-  `free`-builtin use only.
-- `process_vm_readv`/`process_vm_writev`, `ptrace` — debugging/tracing-shaped,
-  not job-control.
-- `ttyname` — achievable today via `fs::readlinkat` on `/proc/self/fd/N`
-  (what glibc's own implementation does internally); not a distinct syscall,
-  so not really "missing" so much as "uses an existing primitive."
+| Symbol | Reference | Issue | Notes |
+| --- | --- | --- | --- |
+| `inotify_init1`, `inotify_add_watch`, `inotify_rm_watch` | `libc::inotify_add_watch` | #100 | Real syscalls, but no confirmed shell use case surfaced by reading `rush`. |
+| `sysinfo` | `libc::sysinfo` | #101 | Real syscall (uptime/load/mem stats), speculative `uptime`/`free`-builtin use only. |
+| `process_vm_readv`, `process_vm_writev`, `ptrace` | `libc::ptrace` | #102 | Debugging/tracing-shaped, not job-control. `ptrace` specifically is unusually foot-gun-prone and would warrant its own design discussion before an implementation PR. |
+| `ttyname` | `libc::ttyname` | #103 | Achievable today via `fs::readlinkat` on `/proc/self/fd/N` (what glibc's own implementation does internally); not a distinct syscall, so not really "missing" so much as "uses an existing primitive." |
