@@ -223,3 +223,85 @@ pub unsafe fn syscall6(
     }
     ret
 }
+
+/// `clone(2)` with `CLONE_VFORK|CLONE_VM` (`flags`), immediately followed
+/// in the child by `execve(2)` on `path`/`argv`/`envp` — entirely within
+/// this one asm block, so the child executes not one instruction of
+/// compiler-generated Rust/C code of its own.
+///
+/// This is deliberate, and not just a style choice: a `clone(CLONE_VM)`
+/// child shares actual memory with the parent (no copy-on-write, unlike
+/// plain `fork`), so any ordinary Rust code running in the child after the
+/// syscall returns is unsound in two ways a bare `test`/`jnz`/`syscall`
+/// sequence avoids. First, the child would need to *return* through the
+/// same call frames the parent's own continuation resumes through — frames
+/// that live on whatever stack address `clone` used, which for a freshly
+/// provided child stack has none of the call/return bookkeeping already
+/// resuming code depends on, and for a shared stack (`stack == 0`, as used
+/// here) is fine for returning but reintroduces the second problem: the
+/// compiler freely reuses a stack slot between "this local is only live in
+/// the child branch" and "this local is only live in the parent's
+/// continuation" — a correct optimization for code that, as far as the
+/// compiler can see, executes at most one of those branches per call, but
+/// wrong here because `CLONE_VM` really does let both branches' writes
+/// land in the same physical memory, at genuinely different times. Doing
+/// only raw syscalls, entirely in registers, sidesteps both: nothing is
+/// ever pushed onto the (unused, since `stack == 0`) child stack, and
+/// there is no Rust-level local for the optimizer to alias.
+///
+/// On `execve` failure the child calls `exit_group(127)`, matching the
+/// shell "command not found" convention — the caller distinguishes "ran
+/// and exited 127 itself" from "exec failed" the same way any fork+exec
+/// caller already must, there being no channel back to the parent that
+/// wouldn't reintroduce the hazard above.
+///
+/// Returns the child's pid to the parent, or the raw `-errno` `clone`
+/// itself failed with (same `-4095..=-1` convention as every other raw
+/// syscall in this crate). Never returns in the child.
+///
+/// # Safety
+/// `path`, `argv`, `envp` must satisfy the same contract as `execve`:
+/// `path` a valid, NUL-terminated C string, `argv`/`envp` valid
+/// NUL-terminated arrays of valid C-string pointers, all live for the
+/// duration of the call.
+#[inline]
+pub unsafe fn vfork_execve(
+    flags: usize,
+    path: *const u8,
+    argv: *const *const u8,
+    envp: *const *const u8,
+) -> usize {
+    let ret: usize;
+    unsafe {
+        asm!(
+            "syscall",              // clone(flags, stack = 0, 0, 0, 0)
+            "test rax, rax",
+            "jnz 2f",               // parent: rax already holds the result
+            "mov rdi, r12",
+            "mov rsi, r13",
+            "mov rdx, r14",
+            "mov rax, {execve_nr}",
+            "syscall",              // execve(path, argv, envp)
+            "mov rax, {exit_nr}",
+            "mov rdi, 127",
+            "syscall",              // exit_group(127): execve failed
+            "ud2",                  // unreachable: exit_group never returns
+            "2:",
+            inlateout("rax") nr::CLONE => ret,
+            in("rdi") flags,
+            in("rsi") 0usize,
+            in("rdx") 0usize,
+            in("r10") 0usize,
+            in("r8") 0usize,
+            in("r12") path,
+            in("r13") argv,
+            in("r14") envp,
+            execve_nr = const nr::EXECVE,
+            exit_nr = const nr::EXIT_GROUP,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        );
+    }
+    ret
+}
