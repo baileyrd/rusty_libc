@@ -372,7 +372,7 @@ decision, not proposing to silently add.
 
 # Round 4 — capabilities assessment
 
-> **Status:** open. A fresh review done after Round 3 and the `signalfd`
+> **Status:** done. A fresh review done after Round 3 and the `signalfd`
 > decision (ADR-0002) both landed. Cross-checked two ways: a full inventory of
 > every `pub` symbol against Round 1–3's own history (nothing left
 > unimplemented from those rounds — Round 3's own status line was stale and
@@ -382,7 +382,8 @@ decision, not proposing to silently add.
 > below are therefore forward-looking: real, well-scoped POSIX/Linux
 > primitives a shell plausibly wants next, not fixes for something broken
 > today. Ordered roughly by how directly each follows from work already
-> shipped.
+> shipped. All nine items (40–48) shipped in PRs #73–#81; the sockets design
+> question is decided in [ADR-0003](docs/adr/0003-sockets-out-of-scope-until-a-consumer-need-exists.md).
 
 ## M. Completing the pidfd ("Track P") story
 
@@ -492,6 +493,15 @@ decision, not proposing to silently add.
     plausible future callers with no primitive to reach for today.
 
 ## Design question: `/dev/tcp`/`/dev/udp` redirection — sockets, not a gap
+
+> **Status:** decided. See
+> [ADR-0003](docs/adr/0003-sockets-out-of-scope-until-a-consumer-need-exists.md):
+> sockets stay out of scope until a consumer actually wants `/dev/tcp`/
+> `/dev/udp` redirection or another networking-shaped feature — no
+> speculative `socket`/`connect`/resolver surface added now. Unlike Round 3
+> §L/ADR-0002 (a confirmed consumer need, choosing the right primitive for
+> it), there is currently no confirmed need at all, so the decision is to
+> defer, not to implement.
 
 Not a missing primitive so much as a scope decision, in the same spirit as
 Round 3 §L: bash and several bash-compatible shells support
