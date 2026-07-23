@@ -29,6 +29,7 @@
 
 pub mod arch;
 pub mod dns;
+pub mod epoll;
 pub mod eventfd;
 pub mod fd;
 pub mod fs;

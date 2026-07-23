@@ -124,6 +124,9 @@ pub mod nr {
     pub const PREADV: usize = 69;
     pub const PWRITEV: usize = 70;
     pub const EVENTFD2: usize = 19;
+    pub const EPOLL_CREATE1: usize = 20;
+    pub const EPOLL_CTL: usize = 21;
+    pub const EPOLL_PWAIT: usize = 22;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.

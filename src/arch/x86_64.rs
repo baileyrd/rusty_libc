@@ -121,6 +121,9 @@ pub mod nr {
     pub const PREADV: usize = 295;
     pub const PWRITEV: usize = 296;
     pub const EVENTFD2: usize = 290;
+    pub const EPOLL_CREATE1: usize = 291;
+    pub const EPOLL_CTL: usize = 233;
+    pub const EPOLL_WAIT: usize = 232;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.
