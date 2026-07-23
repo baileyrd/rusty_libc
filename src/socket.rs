@@ -264,6 +264,102 @@ pub fn accept4_in6(fd: i32, flags: i32) -> Result<(i32, SockAddrIn6), Errno> {
     Ok((newfd, addr))
 }
 
+/// Get the local IPv4 address `fd` is bound to (the address `bind_in`
+/// picked, or `connect_in` bound implicitly).
+pub fn getsockname_in(fd: i32) -> Result<SockAddrIn, Errno> {
+    let mut addr = SockAddrIn {
+        family: 0,
+        port: 0,
+        addr: [0; 4],
+        zero: [0; 8],
+    };
+    let mut addrlen: u32 = core::mem::size_of::<SockAddrIn>() as u32;
+    // SAFETY: `addr`/`addrlen` are valid, correctly-sized out-parameters the
+    // kernel fills in.
+    let ret = unsafe {
+        syscall3(
+            nr::GETSOCKNAME,
+            fd as usize,
+            &mut addr as *mut SockAddrIn as usize,
+            &mut addrlen as *mut u32 as usize,
+        )
+    };
+    from_ret(ret)?;
+    Ok(addr)
+}
+
+/// Get the local IPv6 address `fd` is bound to. See [`getsockname_in`].
+pub fn getsockname_in6(fd: i32) -> Result<SockAddrIn6, Errno> {
+    let mut addr = SockAddrIn6 {
+        family: 0,
+        port: 0,
+        flowinfo: 0,
+        addr: [0; 16],
+        scope_id: 0,
+    };
+    let mut addrlen: u32 = core::mem::size_of::<SockAddrIn6>() as u32;
+    // SAFETY: `addr`/`addrlen` are valid, correctly-sized out-parameters the
+    // kernel fills in.
+    let ret = unsafe {
+        syscall3(
+            nr::GETSOCKNAME,
+            fd as usize,
+            &mut addr as *mut SockAddrIn6 as usize,
+            &mut addrlen as *mut u32 as usize,
+        )
+    };
+    from_ret(ret)?;
+    Ok(addr)
+}
+
+/// Get the remote IPv4 address `fd` is connected to (via [`connect_in`] or
+/// as returned by [`accept4_in`]).
+pub fn getpeername_in(fd: i32) -> Result<SockAddrIn, Errno> {
+    let mut addr = SockAddrIn {
+        family: 0,
+        port: 0,
+        addr: [0; 4],
+        zero: [0; 8],
+    };
+    let mut addrlen: u32 = core::mem::size_of::<SockAddrIn>() as u32;
+    // SAFETY: `addr`/`addrlen` are valid, correctly-sized out-parameters the
+    // kernel fills in.
+    let ret = unsafe {
+        syscall3(
+            nr::GETPEERNAME,
+            fd as usize,
+            &mut addr as *mut SockAddrIn as usize,
+            &mut addrlen as *mut u32 as usize,
+        )
+    };
+    from_ret(ret)?;
+    Ok(addr)
+}
+
+/// Get the remote IPv6 address `fd` is connected to. See [`getpeername_in`].
+pub fn getpeername_in6(fd: i32) -> Result<SockAddrIn6, Errno> {
+    let mut addr = SockAddrIn6 {
+        family: 0,
+        port: 0,
+        flowinfo: 0,
+        addr: [0; 16],
+        scope_id: 0,
+    };
+    let mut addrlen: u32 = core::mem::size_of::<SockAddrIn6>() as u32;
+    // SAFETY: `addr`/`addrlen` are valid, correctly-sized out-parameters the
+    // kernel fills in.
+    let ret = unsafe {
+        syscall3(
+            nr::GETPEERNAME,
+            fd as usize,
+            &mut addr as *mut SockAddrIn6 as usize,
+            &mut addrlen as *mut u32 as usize,
+        )
+    };
+    from_ret(ret)?;
+    Ok(addr)
+}
+
 /// Send `buf` on a connected socket `fd` (TCP, or a UDP socket that has
 /// called `connect`), returning the number of bytes actually sent.
 pub fn send(fd: i32, buf: &[u8], flags: i32) -> Result<usize, Errno> {
@@ -431,10 +527,10 @@ mod tests {
 
     #[test]
     fn tcp_loopback_echo_ipv4() {
-        // Bind a listener on an ephemeral port (port 0), discover which port
-        // the kernel picked isn't exposed without getsockname (out of scope
-        // for this module), so bind to a fixed high port instead; retry a
-        // couple of times in the unlikely case it's already in use.
+        // Bind to a fixed high port rather than an ephemeral one (port 0) to
+        // keep this test independent of getsockname_in (exercised in its own
+        // test below); retry a couple of times in the unlikely case it's
+        // already in use.
         let mut last_err = None;
         for port in [58231u16, 58232, 58233] {
             let listener = socket(AF_INET, SOCK_STREAM, 0).expect("socket");
@@ -510,6 +606,56 @@ mod tests {
     fn accept_on_non_listening_socket_is_einval() {
         let s = socket(AF_INET, SOCK_STREAM, 0).expect("socket");
         assert_eq!(accept(s), Err(Errno::EINVAL));
+        fd::close(s).ok();
+    }
+
+    #[test]
+    fn getsockname_and_getpeername_report_the_real_endpoints() {
+        // Bind to an ephemeral port (0) and let the kernel pick one --
+        // exactly the port-discovery use case getsockname_in exists for.
+        let listener = socket(AF_INET, SOCK_STREAM, 0).expect("socket");
+        bind_in(listener, &SockAddrIn::new(LOOPBACK, 0)).expect("bind");
+        listen(listener, 1).expect("listen");
+        let listener_addr = getsockname_in(listener).expect("getsockname listener");
+        assert_eq!(listener_addr.octets(), LOOPBACK);
+        assert_ne!(listener_addr.port(), 0, "kernel should have picked a port");
+
+        let client = socket(AF_INET, SOCK_STREAM, 0).expect("socket");
+        connect_in(client, &SockAddrIn::new(LOOPBACK, listener_addr.port())).expect("connect");
+        let client_addr = getsockname_in(client).expect("getsockname client");
+        assert_eq!(client_addr.octets(), LOOPBACK);
+        assert_ne!(client_addr.port(), 0);
+
+        let (server_side, _) = accept4_in(listener, 0).expect("accept4");
+
+        // The server side's peer is the client's own (ephemeral) address.
+        let peer_of_server = getpeername_in(server_side).expect("getpeername server");
+        assert_eq!(peer_of_server.octets(), LOOPBACK);
+        assert_eq!(peer_of_server.port(), client_addr.port());
+
+        // The client's peer is the listener's address.
+        let peer_of_client = getpeername_in(client).expect("getpeername client");
+        assert_eq!(peer_of_client.octets(), LOOPBACK);
+        assert_eq!(peer_of_client.port(), listener_addr.port());
+
+        fd::close(client).ok();
+        fd::close(server_side).ok();
+        fd::close(listener).ok();
+    }
+
+    #[test]
+    fn getsockname_on_unbound_socket_reports_wildcard() {
+        let s = socket(AF_INET, SOCK_DGRAM, 0).expect("socket");
+        let addr = getsockname_in(s).expect("getsockname");
+        assert_eq!(addr.octets(), [0, 0, 0, 0]);
+        assert_eq!(addr.port(), 0);
+        fd::close(s).ok();
+    }
+
+    #[test]
+    fn getpeername_on_unconnected_socket_is_enotconn() {
+        let s = socket(AF_INET, SOCK_STREAM, 0).expect("socket");
+        assert_eq!(getpeername_in(s), Err(Errno(107))); // ENOTCONN
         fd::close(s).ok();
     }
 }

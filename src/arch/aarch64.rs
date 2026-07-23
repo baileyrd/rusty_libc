@@ -109,6 +109,8 @@ pub mod nr {
     pub const RECVFROM: usize = 207;
     pub const SHUTDOWN: usize = 210;
     pub const ACCEPT4: usize = 242;
+    pub const GETSOCKNAME: usize = 204;
+    pub const GETPEERNAME: usize = 205;
     pub const TRUNCATE: usize = 45;
     pub const GETTID: usize = 178;
     pub const CLOSE_RANGE: usize = 436;
