@@ -40,6 +40,7 @@ pub mod rand;
 pub mod rlimit;
 pub mod signal;
 pub mod socket;
+pub mod sysinfo;
 pub mod termios;
 pub mod time;
 pub mod tty;
