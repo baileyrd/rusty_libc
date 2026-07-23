@@ -26,6 +26,7 @@ assertions), not glibc's.
 | `socket` | TCP/UDP over `AF_INET`/`AF_INET6`: `socket`/`bind`/`connect`/`listen`/`accept`/`accept4`/`send`/`recv`/`sendto`/`recvfrom`/`shutdown`/`getsockname`/`getpeername`, `SockAddrIn`/`SockAddrIn6` (kernel `sockaddr_in`/`sockaddr_in6` layouts) — see [ADR-0003](docs/adr/0003-add-sockets-tcp-udp-and-dns-resolution.md) |
 | `dns` | `resolve_a`/`resolve_aaaa` — a minimal stub resolver (RFC 1035 A/AAAA over UDP port 53, `/etc/resolv.conf`), no `getaddrinfo`/libc involved |
 | `eventfd` | `eventfd` (`EFD_SEMAPHORE`/`EFD_CLOEXEC`/`EFD_NONBLOCK`) — a pollable kernel counter, the third `*fd` primitive alongside `signalfd`/`timerfd_create`; drive it with `fd::read`/`fd::write` |
+| `epoll` | `epoll_create1`/`epoll_ctl`/`epoll_wait`, `EpollEvent` (kernel `struct epoll_event` — packed on x86_64, natural alignment on aarch64) — a scalable successor to `fd::poll` for many-fd event loops |
 | `wait` | `waitpid`/`waitpid_rusage` (via `wait4`), `waitid`/`waitid_rusage` (with `WNOWAIT` and a `Siginfo`), `getrusage` (`RUSAGE_SELF`/`RUSAGE_CHILDREN`), `Rusage`, and the `W*` status decoders |
 | `rand` | `getrandom` (`GRND_NONBLOCK`/`GRND_RANDOM`) |
 | `mmap` | `mmap`/`munmap`/`mprotect`/`madvise`/`mlock`/`munlock`/`msync`; `PROT_*`/`MAP_*`/`MADV_*`/`MS_*` constants |
