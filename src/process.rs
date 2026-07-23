@@ -838,6 +838,15 @@ mod tests {
         // intermediate and the grandchild reports that via EOF once both
         // exit (the test process closes its own write-end copy up front).
         let (r, w) = fd::pipe2(0).expect("pipe2");
+        // Handshake pipe: without it, the intermediate can exit before the
+        // grandchild's prctl call has actually run, in which case
+        // pdeathsig never arms and the grandchild just survives as an
+        // ordinary orphan -- a real, observed flake (roughly 1 in 5 runs),
+        // not a fluke. The grandchild writes a byte only after
+        // set_pdeathsig succeeds; the intermediate blocks reading it before
+        // exiting, so the intermediate's death is guaranteed to happen
+        // strictly after pdeathsig is armed.
+        let (sync_r, sync_w) = fd::pipe2(0).expect("pipe2 sync");
 
         match unsafe { fork() }.expect("fork") {
             0 => {
@@ -845,25 +854,31 @@ mod tests {
                 match unsafe { fork() }.expect("fork") {
                     0 => {
                         // Grandchild: arm pdeathsig against the intermediate,
-                        // then wait to be killed by it. The sleep is a
-                        // fallback bound, not the mechanism under test --
-                        // if pdeathsig regresses, this keeps the suite from
-                        // hanging instead of masking the regression (the
-                        // poll timeout below is well under this).
+                        // confirm it over the handshake pipe, then wait to
+                        // be killed. The sleep is a fallback bound, not the
+                        // mechanism under test -- if pdeathsig regresses,
+                        // this keeps the suite from hanging instead of
+                        // masking the regression (the poll timeout below is
+                        // well under this).
                         let _ = set_pdeathsig(SIGKILL);
+                        let _ = fd::write(sync_w, b"x");
                         crate::time::nanosleep(&crate::time::Timespec::from_millis(2000), None)
                             .ok();
                         exit_group(0);
                     }
                     _ => {
-                        // Having spawned the grandchild with pdeathsig
-                        // armed, exit immediately so it fires promptly.
+                        // Wait for the grandchild's handshake before
+                        // exiting, so pdeathsig is guaranteed armed first.
+                        let mut byte = [0u8; 1];
+                        let _ = fd::read(sync_r, &mut byte);
                         exit_group(0);
                     }
                 }
             }
             intermediate_pid => {
                 fd::close(w).expect("close w");
+                fd::close(sync_r).expect("close sync_r");
+                fd::close(sync_w).expect("close sync_w");
                 let (_, status) = wait::waitpid(intermediate_pid, 0).expect("waitpid intermediate");
                 assert!(wait::wifexited(status));
 
