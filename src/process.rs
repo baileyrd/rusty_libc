@@ -3,7 +3,7 @@
 
 use crate::arch::nr;
 use crate::arch::{
-    from_ret, from_ret_i32, syscall0, syscall1, syscall2, syscall3, syscall5, Errno,
+    from_ret, from_ret_i32, syscall0, syscall1, syscall2, syscall3, syscall4, syscall5, Errno,
 };
 use core::ffi::{c_char, CStr};
 
@@ -306,6 +306,24 @@ pub fn pidfd_open(pid: i32, flags: u32) -> Result<i32, Errno> {
     // SAFETY: plain integer arguments, no memory referenced.
     let ret = unsafe { syscall2(nr::PIDFD_OPEN, pid as usize, flags as usize) };
     from_ret_i32(ret)
+}
+
+/// Send signal `sig` to the process referred to by `pidfd` (`pidfd_open`'s
+/// companion on the signalling side, Track P). Unlike [`kill`], which
+/// re-targets a numeric pid the kernel may since have recycled for an
+/// unrelated process, `pidfd` is a stable handle to *this specific*
+/// process: closing the last reuse-race window in the pidfd story
+/// ([`pidfd_open`] closed it for lookup, [`crate::wait::waitid`] with
+/// `P_PIDFD` closed it for reaping, this closes it for signalling).
+///
+/// `flags` must be `0` — the kernel defines no flags for this syscall as
+/// of the versions this crate targets.
+pub fn pidfd_send_signal(pidfd: i32, sig: i32) -> Result<(), Errno> {
+    // pidfd_send_signal(pidfd, sig, info = NULL, flags = 0).
+    // SAFETY: `pidfd`/`sig` are plain integers; a null `info` is valid and
+    // means "no siginfo payload", matching a plain `kill`.
+    let ret = unsafe { syscall4(nr::PIDFD_SEND_SIGNAL, pidfd as usize, sig as usize, 0, 0) };
+    from_ret(ret).map(|_| ())
 }
 
 /// Terminate all threads in the process with status `status`. Never returns.
@@ -1088,6 +1106,38 @@ mod tests {
         };
         wait::waitpid(child, 0).expect("waitpid");
         assert_eq!(pidfd_open(child, 0), Err(Errno::ESRCH));
+    }
+
+    #[test]
+    fn pidfd_send_signal_kills_the_referenced_process() {
+        use crate::fd;
+        use crate::signal::SIGKILL;
+        use crate::wait;
+
+        // A long-lived child that just blocks; `pidfd_send_signal` reaches
+        // it by pidfd, not by re-deriving/guessing its pid.
+        let child = match unsafe { fork() }.expect("fork") {
+            0 => loop {
+                let req = crate::time::Timespec::from_millis(60_000);
+                let _ = crate::time::nanosleep(&req, None);
+            },
+            pid => pid,
+        };
+        let pidfd = pidfd_open(child, 0).expect("pidfd_open");
+
+        pidfd_send_signal(pidfd, SIGKILL).expect("pidfd_send_signal");
+
+        let (wpid, status) = wait::waitpid(child, 0).expect("waitpid");
+        assert_eq!(wpid, child);
+        assert!(wait::wifsignaled(status));
+        assert_eq!(wait::wtermsig(status), SIGKILL);
+
+        fd::close(pidfd).expect("close pidfd");
+    }
+
+    #[test]
+    fn pidfd_send_signal_bad_fd_is_ebadf() {
+        assert_eq!(pidfd_send_signal(-1, 0), Err(Errno::EBADF));
     }
 
     #[test]
