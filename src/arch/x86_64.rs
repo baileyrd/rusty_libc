@@ -58,6 +58,9 @@ pub mod nr {
     pub const RT_SIGPENDING: usize = 127;
     pub const RT_SIGSUSPEND: usize = 130;
     pub const CLOCK_GETTIME: usize = 228;
+    pub const TIMERFD_CREATE: usize = 283;
+    pub const TIMERFD_SETTIME: usize = 286;
+    pub const TIMERFD_GETTIME: usize = 287;
     pub const EXIT_GROUP: usize = 231;
     pub const OPENAT: usize = 257;
     pub const MKDIRAT: usize = 258;
