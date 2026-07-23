@@ -95,6 +95,15 @@ pub mod nr {
     pub const PIDFD_OPEN: usize = 434;
     pub const CLONE3: usize = 435;
     pub const PIDFD_SEND_SIGNAL: usize = 424;
+    pub const SOCKET: usize = 41;
+    pub const CONNECT: usize = 42;
+    pub const ACCEPT: usize = 43;
+    pub const SENDTO: usize = 44;
+    pub const RECVFROM: usize = 45;
+    pub const SHUTDOWN: usize = 48;
+    pub const BIND: usize = 49;
+    pub const LISTEN: usize = 50;
+    pub const ACCEPT4: usize = 288;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.
