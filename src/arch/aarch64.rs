@@ -107,6 +107,7 @@ pub mod nr {
     pub const RECVFROM: usize = 207;
     pub const SHUTDOWN: usize = 210;
     pub const ACCEPT4: usize = 242;
+    pub const TRUNCATE: usize = 45;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.
