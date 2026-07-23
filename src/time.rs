@@ -86,6 +86,22 @@ pub fn clock_gettime(clockid: i32) -> Result<Timespec, Errno> {
     Ok(unsafe { ts.assume_init() })
 }
 
+/// Query clock `clockid`'s resolution (the smallest interval it can
+/// represent) -- for most clocks on Linux this is a fixed `1` nanosecond
+/// regardless of the hardware's actual precision, since the kernel doesn't
+/// track a per-clock granularity beyond that; still real syscall data, not
+/// a constant this crate could hardcode.
+pub fn clock_getres(clockid: i32) -> Result<Timespec, Errno> {
+    let mut ts = core::mem::MaybeUninit::<Timespec>::uninit();
+    // clock_getres(clockid, &mut ts).
+    // SAFETY: `ts` is a valid, exclusively-borrowed, suitably-sized-and-aligned
+    // `struct timespec`; the kernel writes it completely on success.
+    let ret = unsafe { syscall2(nr::CLOCK_GETRES, clockid as usize, ts.as_mut_ptr() as usize) };
+    from_ret(ret)?;
+    // SAFETY: `from_ret` returned `Ok`, so the kernel fully initialized `ts`.
+    Ok(unsafe { ts.assume_init() })
+}
+
 /// Suspend execution for at least the interval `req`.
 ///
 /// If a signal interrupts the sleep, this returns `Err(EINTR)`; when `rem` is
@@ -267,6 +283,22 @@ mod tests {
         // BOOTTIME tracks MONOTONIC closely absent a suspend/resume in between.
         let boot = clock_gettime(CLOCK_BOOTTIME).expect("clock_gettime");
         assert!(boot.tv_sec > 0);
+    }
+
+    #[test]
+    fn clock_getres_reports_a_sane_small_resolution() {
+        for clockid in [CLOCK_REALTIME, CLOCK_MONOTONIC] {
+            let res = clock_getres(clockid).expect("clock_getres");
+            // Never negative, and well under a second -- every real Linux
+            // clock's resolution is nanosecond- or microsecond-scale.
+            assert!(res.tv_sec == 0, "unexpectedly coarse resolution: {res:?}");
+            assert!(res.tv_nsec > 0 && res.tv_nsec < 1_000_000_000);
+        }
+    }
+
+    #[test]
+    fn clock_getres_bad_clockid_is_einval() {
+        assert_eq!(clock_getres(9999), Err(Errno::EINVAL));
     }
 
     // Read CLOCK_MONOTONIC directly via the syscall, bypassing the vDSO.

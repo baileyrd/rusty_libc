@@ -31,7 +31,7 @@ assertions), not glibc's.
 | `termios` | kernel `Termios`, `tcgetattr`/`tcsetattr`(`_with`), `make_raw`, `tcflush`/`tcdrain`, tty pgrp queries, `isatty`, full `c_cc`/flag constants |
 | `tty` | `Winsize` window-size query, `openpty` (pty pair allocation) |
 | `rlimit` | `prlimit`/`getrlimit`/`setrlimit`, `RLIMIT_*` |
-| `time` | `Timespec`, `clock_gettime` (vDSO fast path, no syscall) incl. the `*_COARSE`/`BOOTTIME` clocks, `nanosleep`, `clock_nanosleep` (absolute/explicit-clock, `TIMER_ABSTIME`), `Itimerspec`, `timerfd_create`/`timerfd_settime`/`timerfd_gettime` |
+| `time` | `Timespec`, `clock_gettime` (vDSO fast path, no syscall) incl. the `*_COARSE`/`BOOTTIME` clocks, `clock_getres`, `nanosleep`, `clock_nanosleep` (absolute/explicit-clock, `TIMER_ABSTIME`), `Itimerspec`, `timerfd_create`/`timerfd_settime`/`timerfd_gettime` |
 | `umask` | `umask` |
 
 ## Example
