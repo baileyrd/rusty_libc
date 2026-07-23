@@ -112,6 +112,7 @@ pub mod nr {
     pub const CLOSE_RANGE: usize = 436;
     pub const FSYNC: usize = 82;
     pub const FDATASYNC: usize = 83;
+    pub const CLOCK_GETRES: usize = 114;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.
