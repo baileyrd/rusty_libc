@@ -421,6 +421,10 @@ mod tests {
                 assert_eq!(info.si_pid, pid);
                 assert_eq!(info.si_code, CLD_EXITED);
                 assert_eq!(info.si_status, 5);
+                // `rusage` is otherwise unused on non-x86_64: the assertion
+                // below that reads it is gated to x86_64.
+                #[cfg(not(target_arch = "x86_64"))]
+                let _ = &rusage;
 
                 // The rusage content check is gated to x86_64: under the
                 // aarch64 qemu-user CI job, waitid's rusage out-parameter
