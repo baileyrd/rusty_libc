@@ -62,6 +62,7 @@ pub mod nr {
     pub const GETSID: usize = 124;
     pub const RT_SIGPENDING: usize = 127;
     pub const RT_SIGSUSPEND: usize = 130;
+    pub const RT_SIGQUEUEINFO: usize = 129;
     pub const SIGNALFD4: usize = 289;
     pub const CLOCK_GETTIME: usize = 228;
     pub const TIMERFD_CREATE: usize = 283;
