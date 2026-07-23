@@ -176,6 +176,94 @@ pub fn get_pdeathsig() -> Result<i32, Errno> {
     Ok(sig)
 }
 
+// --- uname(2) ------------------------------------------------------------
+
+/// System identification (kernel `struct new_utsname`): kernel name,
+/// hostname, release, version, machine, and NIS/YP domain name, each a
+/// fixed-size, NUL-terminated byte string. The primitive behind
+/// `$OSTYPE`/`$MACHTYPE`-style shell variables.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Utsname {
+    /// Kernel name (always `"Linux"` for this crate, which is Linux-only).
+    pub sysname: [u8; 65],
+    /// Network node hostname.
+    pub nodename: [u8; 65],
+    /// Kernel release (e.g. `"6.8.0"`).
+    pub release: [u8; 65],
+    /// Kernel version/build string.
+    pub version: [u8; 65],
+    /// Hardware/architecture name (e.g. `"x86_64"`, `"aarch64"`).
+    pub machine: [u8; 65],
+    /// NIS/YP domain name.
+    pub domainname: [u8; 65],
+}
+
+const _: () = assert!(core::mem::size_of::<Utsname>() == 390);
+
+impl Default for Utsname {
+    fn default() -> Self {
+        Utsname {
+            sysname: [0; 65],
+            nodename: [0; 65],
+            release: [0; 65],
+            version: [0; 65],
+            machine: [0; 65],
+            domainname: [0; 65],
+        }
+    }
+}
+
+impl Utsname {
+    /// Trim a field at its first NUL byte and return the C-string view.
+    fn field(bytes: &[u8; 65]) -> &CStr {
+        CStr::from_bytes_until_nul(bytes)
+            .expect("kernel-filled utsname field is always NUL-terminated")
+    }
+
+    /// Kernel name as a C-string view (always `"Linux"` here).
+    #[inline]
+    pub fn sysname(&self) -> &CStr {
+        Self::field(&self.sysname)
+    }
+    /// Network node hostname as a C-string view.
+    #[inline]
+    pub fn nodename(&self) -> &CStr {
+        Self::field(&self.nodename)
+    }
+    /// Kernel release as a C-string view.
+    #[inline]
+    pub fn release(&self) -> &CStr {
+        Self::field(&self.release)
+    }
+    /// Kernel version/build string as a C-string view.
+    #[inline]
+    pub fn version(&self) -> &CStr {
+        Self::field(&self.version)
+    }
+    /// Hardware/architecture name as a C-string view.
+    #[inline]
+    pub fn machine(&self) -> &CStr {
+        Self::field(&self.machine)
+    }
+    /// NIS/YP domain name as a C-string view.
+    #[inline]
+    pub fn domainname(&self) -> &CStr {
+        Self::field(&self.domainname)
+    }
+}
+
+/// Get system identification: kernel name/release/version, hostname,
+/// machine/architecture, and domain name.
+pub fn uname() -> Result<Utsname, Errno> {
+    let mut buf = Utsname::default();
+    // SAFETY: `buf` is a valid, exclusively-borrowed 390-byte `struct
+    // new_utsname` the kernel writes completely on success.
+    let ret = unsafe { syscall1(nr::UNAME, &mut buf as *mut Utsname as usize) };
+    from_ret(ret)?;
+    Ok(buf)
+}
+
 /// Set the process group ID of `pid` to `pgid` (both `0` mean "self").
 pub fn setpgid(pid: i32, pgid: i32) -> Result<(), Errno> {
     // SAFETY: plain integer arguments, no memory referenced.
@@ -466,6 +554,21 @@ mod tests {
         assert_eq!(geteuid(), getuid());
         assert_eq!(getegid(), getgid());
         assert_eq!(getuid(), getuid());
+    }
+
+    #[test]
+    fn uname_reports_linux_and_matching_machine() {
+        let u = uname().expect("uname");
+        assert_eq!(u.sysname().to_bytes(), b"Linux");
+
+        #[cfg(target_arch = "x86_64")]
+        assert_eq!(u.machine().to_bytes(), b"x86_64");
+        #[cfg(target_arch = "aarch64")]
+        assert_eq!(u.machine().to_bytes(), b"aarch64");
+
+        // release/version are non-empty on any real kernel.
+        assert!(!u.release().to_bytes().is_empty());
+        assert!(!u.version().to_bytes().is_empty());
     }
 
     #[test]
