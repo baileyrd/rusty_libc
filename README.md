@@ -32,7 +32,7 @@ assertions), not glibc's.
 | `wait` | `waitpid`/`waitpid_rusage` (via `wait4`), `waitid`/`waitid_rusage` (with `WNOWAIT` and a `Siginfo`), `getrusage` (`RUSAGE_SELF`/`RUSAGE_CHILDREN`), `Rusage`, and the `W*` status decoders |
 | `rand` | `getrandom` (`GRND_NONBLOCK`/`GRND_RANDOM`) |
 | `mmap` | `mmap`/`munmap`/`mprotect`/`madvise`/`mlock`/`munlock`/`msync`; `PROT_*`/`MAP_*`/`MADV_*`/`MS_*` constants |
-| `termios` | kernel `Termios`, `tcgetattr`/`tcsetattr`(`_with`), `make_raw`, `tcflush`/`tcdrain`/`tcflow`/`tcsendbreak`, tty pgrp queries, `tcgetsid`, `isatty`, full `c_cc`/flag constants |
+| `termios` | kernel `Termios`, `tcgetattr`/`tcsetattr`(`_with`), `make_raw`, `tcflush`/`tcdrain`/`tcflow`/`tcsendbreak`, tty pgrp queries, `tcgetsid`, `isatty`, `ttyname` (via `/proc/self/fd/N`, same as glibc), full `c_cc`/flag constants |
 | `tty` | `Winsize` window-size query, `openpty` (pty pair allocation) |
 | `rlimit` | `prlimit`/`getrlimit`/`setrlimit`, `RLIMIT_*` |
 | `time` | `Timespec`, `clock_gettime` (vDSO fast path, no syscall) incl. the `*_COARSE`/`BOOTTIME` clocks, `clock_getres`, `nanosleep`, `clock_nanosleep` (absolute/explicit-clock, `TIMER_ABSTIME`), `Itimerspec`, `timerfd_create`/`timerfd_settime`/`timerfd_gettime` |
