@@ -116,6 +116,7 @@ pub mod nr {
     pub const CLOCK_GETRES: usize = 229;
     pub const PREADV: usize = 295;
     pub const PWRITEV: usize = 296;
+    pub const EVENTFD2: usize = 290;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.

@@ -119,6 +119,7 @@ pub mod nr {
     pub const CLOCK_GETRES: usize = 114;
     pub const PREADV: usize = 69;
     pub const PWRITEV: usize = 70;
+    pub const EVENTFD2: usize = 19;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.

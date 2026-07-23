@@ -25,6 +25,7 @@ assertions), not glibc's.
 | `signal` | `signal`/`sigaction` (+ `SA_*`), `sigprocmask`/`sigpending`/`sigsuspend`, the x86_64 `SA_RESTORER` trampoline, `SIG*` constants, `signalfd` + `SignalfdSiginfo` (recommended for async signal handling — see [ADR-0002](docs/adr/0002-signalfd-as-primary-event-driven-signal-path.md)), `sigqueue` (send a signal with a payload) |
 | `socket` | TCP/UDP over `AF_INET`/`AF_INET6`: `socket`/`bind`/`connect`/`listen`/`accept`/`accept4`/`send`/`recv`/`sendto`/`recvfrom`/`shutdown`/`getsockname`/`getpeername`, `SockAddrIn`/`SockAddrIn6` (kernel `sockaddr_in`/`sockaddr_in6` layouts) — see [ADR-0003](docs/adr/0003-add-sockets-tcp-udp-and-dns-resolution.md) |
 | `dns` | `resolve_a`/`resolve_aaaa` — a minimal stub resolver (RFC 1035 A/AAAA over UDP port 53, `/etc/resolv.conf`), no `getaddrinfo`/libc involved |
+| `eventfd` | `eventfd` (`EFD_SEMAPHORE`/`EFD_CLOEXEC`/`EFD_NONBLOCK`) — a pollable kernel counter, the third `*fd` primitive alongside `signalfd`/`timerfd_create`; drive it with `fd::read`/`fd::write` |
 | `wait` | `waitpid`/`waitpid_rusage` (via `wait4`), `waitid`/`waitid_rusage` (with `WNOWAIT` and a `Siginfo`), `getrusage` (`RUSAGE_SELF`/`RUSAGE_CHILDREN`), `Rusage`, and the `W*` status decoders |
 | `rand` | `getrandom` (`GRND_NONBLOCK`/`GRND_RANDOM`) |
 | `mmap` | `mmap`/`munmap`/`mprotect`; `PROT_*`/`MAP_*` constants |
