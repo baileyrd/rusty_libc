@@ -28,7 +28,7 @@ assertions), not glibc's.
 | `eventfd` | `eventfd` (`EFD_SEMAPHORE`/`EFD_CLOEXEC`/`EFD_NONBLOCK`) — a pollable kernel counter, the third `*fd` primitive alongside `signalfd`/`timerfd_create`; drive it with `fd::read`/`fd::write` |
 | `wait` | `waitpid`/`waitpid_rusage` (via `wait4`), `waitid`/`waitid_rusage` (with `WNOWAIT` and a `Siginfo`), `getrusage` (`RUSAGE_SELF`/`RUSAGE_CHILDREN`), `Rusage`, and the `W*` status decoders |
 | `rand` | `getrandom` (`GRND_NONBLOCK`/`GRND_RANDOM`) |
-| `mmap` | `mmap`/`munmap`/`mprotect`; `PROT_*`/`MAP_*` constants |
+| `mmap` | `mmap`/`munmap`/`mprotect`/`madvise`/`mlock`/`munlock`/`msync`; `PROT_*`/`MAP_*`/`MADV_*`/`MS_*` constants |
 | `termios` | kernel `Termios`, `tcgetattr`/`tcsetattr`(`_with`), `make_raw`, `tcflush`/`tcdrain`/`tcflow`/`tcsendbreak`, tty pgrp queries, `tcgetsid`, `isatty`, full `c_cc`/flag constants |
 | `tty` | `Winsize` window-size query, `openpty` (pty pair allocation) |
 | `rlimit` | `prlimit`/`getrlimit`/`setrlimit`, `RLIMIT_*` |

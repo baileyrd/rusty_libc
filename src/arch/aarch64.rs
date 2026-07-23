@@ -100,6 +100,10 @@ pub mod nr {
     pub const MUNMAP: usize = 215;
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
+    pub const MSYNC: usize = 227;
+    pub const MLOCK: usize = 228;
+    pub const MUNLOCK: usize = 229;
+    pub const MADVISE: usize = 233;
     pub const SOCKET: usize = 198;
     pub const BIND: usize = 200;
     pub const LISTEN: usize = 201;
