@@ -28,6 +28,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub mod arch;
+pub mod dns;
 pub mod fd;
 pub mod fs;
 pub mod mmap;
