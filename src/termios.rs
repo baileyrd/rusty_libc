@@ -302,38 +302,24 @@ mod tests {
     // --- PTY integration: validate the real-terminal path, not just the
     // ENOTTY-on-a-pipe path. ---
 
-    // ioctls used only to allocate a pty pair from /dev/ptmx.
-    const TIOCSPTLCK: usize = 0x4004_5431; // unlock the slave
-    const TIOCGPTN: usize = 0x8004_5430; // fetch the slave's number
-
-    /// Open a `(master, slave)` pty pair as owned `File`s so the fds close on
-    /// drop. Uses std only to `open(2)`; every terminal op under test goes
-    /// through this crate's wrappers.
+    /// Open a `(master, slave)` pty pair as owned `File`s so the fds close
+    /// on drop. Delegates the actual allocation to `tty::openpty` (this
+    /// also doubles as that function's own integration coverage, since
+    /// every test below exercises the pair it returns); the `File` wrap
+    /// is purely so a panicking assertion mid-test doesn't need explicit
+    /// cleanup.
     fn open_pty() -> (std::fs::File, std::fs::File) {
-        use std::os::fd::AsRawFd;
+        use std::os::fd::FromRawFd;
 
-        let master = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open("/dev/ptmx")
-            .expect("open /dev/ptmx");
-        let mfd = master.as_raw_fd();
-
-        // Unlock the slave (TIOCSPTLCK with a zero lock value).
-        let unlock: i32 = 0;
-        unsafe { ioctl(mfd, TIOCSPTLCK, &unlock as *const i32 as usize) }.expect("TIOCSPTLCK");
-
-        // Discover the slave device number.
-        let mut ptn: i32 = 0;
-        unsafe { ioctl(mfd, TIOCGPTN, &mut ptn as *mut i32 as usize) }.expect("TIOCGPTN");
-
-        let slave = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(format!("/dev/pts/{ptn}"))
-            .expect("open slave pts");
-
-        (master, slave)
+        let (master, slave) = crate::tty::openpty().expect("openpty");
+        // SAFETY: `openpty` returns two freshly opened, valid, owned fds
+        // neither of which is used again outside these `File`s.
+        unsafe {
+            (
+                std::fs::File::from_raw_fd(master),
+                std::fs::File::from_raw_fd(slave),
+            )
+        }
     }
 
     #[test]
