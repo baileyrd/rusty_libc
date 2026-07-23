@@ -130,6 +130,7 @@ pub mod nr {
     pub const INOTIFY_INIT1: usize = 26;
     pub const INOTIFY_ADD_WATCH: usize = 27;
     pub const INOTIFY_RM_WATCH: usize = 28;
+    pub const SYSINFO: usize = 179;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.

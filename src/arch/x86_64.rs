@@ -127,6 +127,7 @@ pub mod nr {
     pub const INOTIFY_INIT1: usize = 294;
     pub const INOTIFY_ADD_WATCH: usize = 254;
     pub const INOTIFY_RM_WATCH: usize = 255;
+    pub const SYSINFO: usize = 99;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.
