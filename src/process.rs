@@ -21,6 +21,15 @@ pub fn getppid() -> i32 {
     unsafe { syscall0(nr::GETPPID) as i32 }
 }
 
+/// Get the calling thread's kernel thread id (`SYS_gettid`), distinct from
+/// [`getpid`] (the thread-*group* id, shared by every thread in the
+/// process) whenever the caller isn't the main thread. Cannot fail.
+#[inline]
+pub fn gettid() -> i32 {
+    // SAFETY: gettid takes no arguments and never fails.
+    unsafe { syscall0(nr::GETTID) as i32 }
+}
+
 /// Get the calling process's real user ID. Cannot fail.
 #[inline]
 pub fn getuid() -> u32 {
@@ -840,6 +849,20 @@ mod tests {
         assert!(getppid() > 0);
         // getpid must match the value std reports.
         assert_eq!(getpid() as u32, std::process::id());
+    }
+
+    #[test]
+    fn gettid_is_stable_per_thread_and_differs_across_threads() {
+        // Note: the test harness itself runs each test on its own worker
+        // thread, so this thread's tid is not expected to equal getpid()
+        // here -- that equality only holds for a process's actual main
+        // thread, which no #[test] body runs on.
+        let this_tid = gettid();
+        assert!(this_tid > 0);
+        assert_eq!(gettid(), this_tid);
+
+        let other_tid = std::thread::spawn(gettid).join().expect("thread join");
+        assert_ne!(other_tid, this_tid);
     }
 
     #[test]
