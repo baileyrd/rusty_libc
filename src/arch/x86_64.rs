@@ -18,6 +18,10 @@ pub mod nr {
     pub const MMAP: usize = 9;
     pub const MPROTECT: usize = 10;
     pub const MUNMAP: usize = 11;
+    pub const MSYNC: usize = 26;
+    pub const MADVISE: usize = 28;
+    pub const MLOCK: usize = 149;
+    pub const MUNLOCK: usize = 150;
     pub const POLL: usize = 7;
     pub const LSEEK: usize = 8;
     pub const RT_SIGACTION: usize = 13;
