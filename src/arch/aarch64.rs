@@ -43,6 +43,9 @@ pub mod nr {
     pub const EXIT_GROUP: usize = 94;
     pub const NANOSLEEP: usize = 101;
     pub const CLOCK_GETTIME: usize = 113;
+    pub const TIMERFD_CREATE: usize = 85;
+    pub const TIMERFD_SETTIME: usize = 86;
+    pub const TIMERFD_GETTIME: usize = 87;
     pub const PREAD64: usize = 67;
     pub const PWRITE64: usize = 68;
     pub const READV: usize = 65;

@@ -1,7 +1,7 @@
-//! Clocks and sleeping: `clock_gettime` and `nanosleep`.
+//! Clocks and sleeping: `clock_gettime`, `nanosleep`, and `timerfd_*`.
 
 use crate::arch::nr;
-use crate::arch::{from_ret, syscall2, Errno};
+use crate::arch::{from_ret, from_ret_i32, syscall2, syscall4, Errno};
 
 /// A time value with nanosecond resolution (kernel `struct timespec`).
 #[repr(C)]
@@ -100,6 +100,86 @@ pub fn nanosleep(req: &Timespec, rem: Option<&mut Timespec>) -> Result<(), Errno
     // or a valid `*mut timespec` the kernel writes on EINTR.
     let ret = unsafe { syscall2(nr::NANOSLEEP, req as *const Timespec as usize, rem_ptr) };
     from_ret(ret).map(|_| ())
+}
+
+// --- timerfd_create(2) / timerfd_settime(2) / timerfd_gettime(2) --------
+
+/// `timerfd_create(2)`/`timerfd_settime(2)` flag: return/set a non-blocking
+/// descriptor.
+pub const TFD_NONBLOCK: i32 = 0o0004000;
+/// `timerfd_create(2)` flag: set close-on-exec on the returned descriptor.
+pub const TFD_CLOEXEC: i32 = 0o2000000;
+/// `timerfd_settime(2)` flag: interpret `new_value.it_value` as an absolute
+/// time on `clockid`, rather than relative to now.
+pub const TFD_TIMER_ABSTIME: i32 = 1;
+
+/// A timerfd's expiration schedule (kernel `struct itimerspec`). `it_value`
+/// is when the timer next expires; `it_interval` is the period for a
+/// repeating timer (zero for one-shot). An all-zero value disarms the timer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Itimerspec {
+    /// Period between expirations after the first (zero: one-shot).
+    pub it_interval: Timespec,
+    /// Time until the next expiration (or, with `TFD_TIMER_ABSTIME`, the
+    /// absolute time of the next expiration).
+    pub it_value: Timespec,
+}
+
+const _: () = assert!(core::mem::size_of::<Itimerspec>() == 32);
+const _: () = assert!(core::mem::offset_of!(Itimerspec, it_value) == 16);
+
+/// Create a timer that notifies through a file descriptor: readable (and
+/// `POLLIN` under [`crate::fd::poll`]) once it expires, with an 8-byte
+/// expiration counter available via [`crate::fd::read`]. `clockid` is
+/// typically [`CLOCK_MONOTONIC`] or [`CLOCK_REALTIME`]; `flags` is an OR of
+/// [`TFD_NONBLOCK`]/[`TFD_CLOEXEC`].
+///
+/// Unlike `alarm`/`SIGALRM`, this composes directly with `poll`: a timeout
+/// becomes one more fd in the same event loop as I/O readiness, instead of
+/// an asynchronously-delivered signal with its own signal-safety rules.
+pub fn timerfd_create(clockid: i32, flags: i32) -> Result<i32, Errno> {
+    // SAFETY: plain integer arguments, no memory referenced.
+    let ret = unsafe { syscall2(nr::TIMERFD_CREATE, clockid as usize, flags as usize) };
+    from_ret_i32(ret)
+}
+
+/// Arm, disarm, or rearm the timer `fd` to `new_value`; passing an all-zero
+/// [`Itimerspec`] disarms it. `flags` accepts [`TFD_TIMER_ABSTIME`]. Returns
+/// the schedule that was in effect before this call.
+pub fn timerfd_settime(fd: i32, flags: i32, new_value: &Itimerspec) -> Result<Itimerspec, Errno> {
+    let mut old = Itimerspec::default();
+    // SAFETY: `new_value` is a valid `*const itimerspec` the kernel only
+    // reads; `old` is a valid, exclusively-borrowed `*mut itimerspec` the
+    // kernel writes.
+    let ret = unsafe {
+        syscall4(
+            nr::TIMERFD_SETTIME,
+            fd as usize,
+            flags as usize,
+            new_value as *const Itimerspec as usize,
+            &mut old as *mut Itimerspec as usize,
+        )
+    };
+    from_ret(ret)?;
+    Ok(old)
+}
+
+/// Get the timer `fd`'s current schedule: time remaining until the next
+/// expiration, and its repeat interval.
+pub fn timerfd_gettime(fd: i32) -> Result<Itimerspec, Errno> {
+    let mut curr = Itimerspec::default();
+    // SAFETY: `curr` is a valid, exclusively-borrowed `*mut itimerspec` the
+    // kernel writes.
+    let ret = unsafe {
+        syscall2(
+            nr::TIMERFD_GETTIME,
+            fd as usize,
+            &mut curr as *mut Itimerspec as usize,
+        )
+    };
+    from_ret(ret)?;
+    Ok(curr)
 }
 
 #[cfg(test)]
@@ -205,5 +285,76 @@ mod tests {
                 tv_nsec: 0
             }
         );
+    }
+
+    #[test]
+    fn timerfd_one_shot_fires_and_is_readable() {
+        let tfd = timerfd_create(CLOCK_MONOTONIC, 0).expect("timerfd_create");
+
+        let value = Itimerspec {
+            it_interval: Timespec::default(),
+            it_value: Timespec::from_millis(50),
+        };
+        timerfd_settime(tfd, 0, &value).expect("timerfd_settime");
+
+        let mut fds = [crate::fd::PollFd::new(tfd, crate::fd::POLLIN)];
+        let n = crate::fd::poll(&mut fds, 1000).expect("poll");
+        assert_eq!(n, 1, "timer did not fire within 1s");
+        assert!(fds[0].is_readable());
+
+        // Reading yields an 8-byte little-endian expiration count.
+        let mut buf = [0u8; 8];
+        let read_n = crate::fd::read(tfd, &mut buf).expect("read expiration count");
+        assert_eq!(read_n, 8);
+        assert_eq!(u64::from_ne_bytes(buf), 1);
+
+        crate::fd::close(tfd).expect("close");
+    }
+
+    #[test]
+    fn timerfd_gettime_reports_remaining_and_interval() {
+        let tfd = timerfd_create(CLOCK_MONOTONIC, 0).expect("timerfd_create");
+
+        let value = Itimerspec {
+            it_interval: Timespec::from_millis(200),
+            it_value: Timespec::from_millis(10_000), // far in the future, won't fire during the test
+        };
+        let old = timerfd_settime(tfd, 0, &value).expect("timerfd_settime");
+        // A freshly created timer had no prior schedule.
+        assert_eq!(old, Itimerspec::default());
+
+        let curr = timerfd_gettime(tfd).expect("timerfd_gettime");
+        assert_eq!(curr.it_interval, value.it_interval);
+        // Remaining time must be positive and no larger than what we set.
+        assert!(curr.it_value.tv_sec >= 0 && curr.it_value.tv_sec <= 10);
+        assert!(curr.it_value.tv_sec > 0 || curr.it_value.tv_nsec > 0);
+
+        crate::fd::close(tfd).expect("close");
+    }
+
+    #[test]
+    fn timerfd_disarm_with_zero_value_clears_schedule() {
+        let tfd = timerfd_create(CLOCK_MONOTONIC, 0).expect("timerfd_create");
+
+        let value = Itimerspec {
+            it_interval: Timespec::default(),
+            it_value: Timespec::from_millis(10_000),
+        };
+        timerfd_settime(tfd, 0, &value).expect("timerfd_settime arm");
+
+        let disarmed =
+            timerfd_settime(tfd, 0, &Itimerspec::default()).expect("timerfd_settime disarm");
+        // The previous (armed) schedule is returned.
+        assert!(disarmed.it_value.tv_sec > 0);
+
+        let curr = timerfd_gettime(tfd).expect("timerfd_gettime");
+        assert_eq!(curr, Itimerspec::default());
+
+        crate::fd::close(tfd).expect("close");
+    }
+
+    #[test]
+    fn timerfd_create_bad_clockid_is_einval() {
+        assert_eq!(timerfd_create(9999, 0), Err(Errno::EINVAL));
     }
 }
