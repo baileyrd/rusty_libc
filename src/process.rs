@@ -649,6 +649,64 @@ pub unsafe fn vfork_exec(
     from_ret_i32(ret)
 }
 
+/// One `dup2`-shaped fd redirection applied by [`vfork_exec_redirected`]
+/// in the child before `execve` — matches `dup2(oldfd, newfd)`
+/// (`oldfd == newfd` is a documented no-op, same as `dup2` itself).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Redirect {
+    /// The fd to duplicate from (e.g. an already-open file for `cmd < file`).
+    pub oldfd: i32,
+    /// The fd to duplicate onto (e.g. `0` for stdin, `1` for stdout).
+    pub newfd: i32,
+}
+
+const _: () = assert!(core::mem::size_of::<Redirect>() == 8);
+const _: () = assert!(core::mem::offset_of!(Redirect, newfd) == 4);
+
+/// Like [`vfork_exec`], but first applies `redirects` in the child, before
+/// `execve` — the fd setup (`cmd > file`, `cmd 2>&1`, `cmd < file`, ...)
+/// almost every real shell command needs, and which [`vfork_exec`] alone
+/// cannot do: nothing runs in a `vfork`'s `CLONE_VM` child except the one
+/// hand-written asm trampoline (see [`crate::arch::vfork_execve`]'s doc
+/// comment for why), so redirection has to be *part of* that same
+/// trampoline rather than ordinary Rust code layered on top of it.
+/// [`crate::arch::vfork_execve_redirected`] is that extended trampoline: a
+/// small loop, still entirely in registers, applying each redirect via a
+/// raw `dup2`/`dup3` before the final `execve`.
+///
+/// If a redirect's `dup2` fails, the child exits `126` (found the command,
+/// couldn't set it up to run) without ever reaching `execve`; a failing
+/// `execve` itself still exits `127`, matching [`vfork_exec`] — a caller
+/// distinguishes the two failure modes via the wait status, the same way
+/// it already must distinguish "exec failed" from "ran and exited 127
+/// itself".
+///
+/// # Safety
+/// `path`, `argv`, `envp` must satisfy the same contract as [`execve`].
+/// Every `oldfd` in `redirects` must be a valid, open fd in the calling
+/// process at the time of the call (they are inherited into the vforked
+/// child unchanged, since `CLONE_VM` shares everything).
+pub unsafe fn vfork_exec_redirected(
+    path: &CStr,
+    argv: *const *const c_char,
+    envp: *const *const c_char,
+    redirects: &[Redirect],
+) -> Result<i32, Errno> {
+    // SAFETY: forwarded to the caller's contract on path/argv/envp/redirects.
+    let ret = unsafe {
+        crate::arch::vfork_execve_redirected(
+            CLONE_VFORK | CLONE_VM | SIGCHLD,
+            path.as_ptr().cast::<u8>(),
+            argv.cast::<*const u8>(),
+            envp.cast::<*const u8>(),
+            redirects.as_ptr().cast::<u8>(),
+            redirects.len(),
+        )
+    };
+    from_ret_i32(ret)
+}
+
 /// A null-terminated array of C-string pointers, owned and kept alive
 /// alongside it — the shape [`execve`]/[`execveat`] need for both `argv` and
 /// `envp` (they are structurally identical: a NUL-terminated list of C
@@ -1189,6 +1247,107 @@ mod tests {
         assert_eq!(wpid, pid);
         assert!(wait::wifexited(status));
         assert_eq!(wait::wexitstatus(status), 7);
+    }
+
+    #[test]
+    fn vfork_exec_redirected_bad_oldfd_exits_126() {
+        use crate::wait;
+
+        // A bad oldfd makes the dup2/dup3 itself fail, so execve is never
+        // reached at all -- the path/argv/envp are never used, and this
+        // runs identically on every arch/emulator (no real exec involved),
+        // unlike the success-path test below.
+        let path = c"/nonexistent/rusty_libc/prog";
+        let argv: [*const c_char; 2] = [path.as_ptr(), core::ptr::null()];
+        let envp: [*const c_char; 1] = [core::ptr::null()];
+        let redirects = [Redirect {
+            oldfd: -1,
+            newfd: 0,
+        }];
+
+        let pid = unsafe { vfork_exec_redirected(path, argv.as_ptr(), envp.as_ptr(), &redirects) }
+            .expect("vfork_exec_redirected");
+        let (wpid, status) = wait::waitpid(pid, 0).expect("waitpid");
+        assert_eq!(wpid, pid);
+        assert!(wait::wifexited(status));
+        assert_eq!(
+            wait::wexitstatus(status),
+            126,
+            "a redirect failure must be distinguishable from a 127 exec failure"
+        );
+    }
+
+    #[test]
+    fn vfork_exec_redirected_skips_dup2_when_oldfd_equals_newfd() {
+        use crate::wait;
+
+        // Portable (no real exec needed) regression test for the
+        // oldfd == newfd skip: aarch64's dup3-based implementation has no
+        // no-op-on-equal case the way dup2 does, so if the skip were
+        // missing there, this redirect alone would fail with EINVAL and
+        // the child would exit 126 -- instead of skipping it, reaching
+        // execve, and failing on the missing path with the expected 127.
+        // `vfork_exec_redirected_applies_dup2_before_exec` covers the same
+        // skip on x86_64 as part of a real exec, but that test is gated
+        // off aarch64 (qemu-user can't reliably exec a host binary), so
+        // this is the only exercise of the skip path there.
+        let path = c"/nonexistent/rusty_libc/prog";
+        let argv: [*const c_char; 2] = [path.as_ptr(), core::ptr::null()];
+        let envp: [*const c_char; 1] = [core::ptr::null()];
+        let redirects = [Redirect { oldfd: 2, newfd: 2 }];
+
+        let pid = unsafe { vfork_exec_redirected(path, argv.as_ptr(), envp.as_ptr(), &redirects) }
+            .expect("vfork_exec_redirected");
+        let (wpid, status) = wait::waitpid(pid, 0).expect("waitpid");
+        assert_eq!(wpid, pid);
+        assert!(wait::wifexited(status));
+        assert_eq!(
+            wait::wexitstatus(status),
+            127,
+            "the equal-fd redirect must be skipped, not fail the whole call"
+        );
+    }
+
+    // Gated to x86_64 for the same reason as `vfork_exec_replaces_child_image_and_reports_no_error`.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn vfork_exec_redirected_applies_dup2_before_exec() {
+        use crate::fd;
+        use crate::wait;
+
+        let (r, w) = fd::pipe2(0).expect("pipe2");
+        let path = c"/bin/sh";
+        let argv: [*const c_char; 4] = [
+            c"/bin/sh".as_ptr(),
+            c"-c".as_ptr(),
+            c"echo hello".as_ptr(),
+            core::ptr::null(),
+        ];
+        let envp: [*const c_char; 1] = [core::ptr::null()];
+        // Two entries: the real redirect (stdout -> the pipe), plus a
+        // deliberate no-op (oldfd == newfd) exercising the skip path --
+        // if that skip were missing, aarch64's dup3-based implementation
+        // would fail this with EINVAL (dup3 has no no-op-on-equal case)
+        // and the whole call would exit 126 instead of succeeding.
+        let redirects = [
+            Redirect { oldfd: w, newfd: 1 },
+            Redirect { oldfd: 2, newfd: 2 },
+        ];
+
+        let pid = unsafe { vfork_exec_redirected(path, argv.as_ptr(), envp.as_ptr(), &redirects) }
+            .expect("vfork_exec_redirected");
+        fd::close(w).expect("close w in parent");
+
+        let mut buf = [0u8; 32];
+        let n = fd::read(r, &mut buf).expect("read");
+        assert_eq!(&buf[..n], b"hello\n");
+
+        let (wpid, status) = wait::waitpid(pid, 0).expect("waitpid");
+        assert_eq!(wpid, pid);
+        assert!(wait::wifexited(status));
+        assert_eq!(wait::wexitstatus(status), 0);
+
+        fd::close(r).expect("close r");
     }
 
     #[test]

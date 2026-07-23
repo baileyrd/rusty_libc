@@ -299,3 +299,98 @@ pub unsafe fn vfork_execve(
     }
     ret
 }
+
+/// Like [`vfork_execve`], but first applies `redirects` (a
+/// `redirects_len`-element array of `(oldfd, newfd)` pairs, 8 bytes each)
+/// as `dup2`-shaped fd redirections in the child, before `execve` — still
+/// entirely within one asm block, for the same reasons [`vfork_execve`]'s
+/// own doc comment explains at length; this is that same technique with a
+/// loop added, not a different one. Uses `dup3` (aarch64 has no legacy
+/// `dup2` syscall at all — see this module's own header doc comment).
+///
+/// A pair with `oldfd == newfd` is skipped rather than calling `dup3` on
+/// it: unlike `dup2(2)`, raw `dup3` has no no-op-on-equal case and returns
+/// `EINVAL` for it instead (see `fd::dup2`'s own doc comment for the same
+/// distinction this crate's higher-level `dup2` already handles). If a
+/// redirect's `dup3` fails, the child calls `exit_group(126)` (the shell
+/// convention for "found the command, but couldn't set it up to run")
+/// without ever reaching `execve`; a failing `execve` itself still exits
+/// `127` as in [`vfork_execve`], so a caller can tell the two failure
+/// modes apart via the wait status.
+///
+/// Returns the child's pid to the parent, or the raw `-errno` `clone`
+/// itself failed with. Never returns in the child.
+///
+/// # Safety
+/// Same contract as [`vfork_execve`] for `path`/`argv`/`envp`, plus:
+/// `redirects` must point to `redirects_len` valid, readable 8-byte
+/// `(i32, i32)` records for the duration of the call.
+#[inline]
+pub unsafe fn vfork_execve_redirected(
+    flags: usize,
+    path: *const u8,
+    argv: *const *const u8,
+    envp: *const *const u8,
+    redirects: *const u8,
+    redirects_len: usize,
+) -> usize {
+    let ret: usize;
+    unsafe {
+        asm!(
+            "svc #0",                     // clone(flags, stack = 0, 0, 0, 0)
+            "cbnz x0, 3f",                 // parent: x0 already holds the result
+            "cbz x13, 2f",                 // no redirects
+            "mov x14, #0",                 // i = 0
+            "1:",
+            "add x15, x12, x14, lsl #3",   // x15 = &redirects[i]
+            "ldr w0, [x15]",               // oldfd
+            "ldr w1, [x15, #4]",           // newfd
+            "cmp w0, w1",
+            "b.eq 6f",                     // oldfd == newfd: dup3 has no
+                                            // no-op case for this, skip
+            "mov x8, {dup3_nr}",
+            "mov x2, #0",                  // flags = 0
+            "svc #0",
+            "cmp x0, #0",
+            "b.lt 4f",                     // dup3 failed -> exit_group(126)
+            "6:",
+            "add x14, x14, #1",
+            "cmp x14, x13",
+            "b.lt 1b",
+            "2:",                          // redirects applied (or none)
+            "mov x0, x9",
+            "mov x1, x10",
+            "mov x2, x11",
+            "mov x8, {execve_nr}",
+            "svc #0",                      // execve(path, argv, envp)
+            "mov x8, {exit_nr}",
+            "mov x0, #127",
+            "svc #0",                      // exit_group(127): execve failed
+            "brk #0",
+            "4:",
+            "mov x8, {exit_nr}",
+            "mov x0, #126",
+            "svc #0",                      // exit_group(126): a redirect failed
+            "brk #0",
+            "3:",
+            in("x8") nr::CLONE,
+            inlateout("x0") flags => ret,
+            in("x1") 0usize,
+            in("x2") 0usize,
+            in("x3") 0usize,
+            in("x4") 0usize,
+            in("x9") path,
+            in("x10") argv,
+            in("x11") envp,
+            in("x12") redirects,
+            in("x13") redirects_len,
+            out("x14") _,
+            out("x15") _,
+            dup3_nr = const nr::DUP3,
+            execve_nr = const nr::EXECVE,
+            exit_nr = const nr::EXIT_GROUP,
+            options(nostack),
+        );
+    }
+    ret
+}
