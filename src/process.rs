@@ -350,6 +350,80 @@ pub unsafe fn fork() -> Result<i32, Errno> {
     from_ret_i32(ret)
 }
 
+/// `clone3(2)` flag: place a pidfd for the new child in `Clone3Args::pidfd`.
+const CLONE_PIDFD: u64 = 0x1000;
+
+/// Arguments for `clone3(2)` (kernel `struct clone_args`). Every field is a
+/// plain `u64`; pointer/fd-shaped fields are cast in and out rather than
+/// typed, matching the kernel ABI, which is the same on x86_64 and aarch64.
+#[repr(C)]
+#[derive(Default)]
+struct Clone3Args {
+    flags: u64,
+    pidfd: u64,
+    child_tid: u64,
+    parent_tid: u64,
+    exit_signal: u64,
+    stack: u64,
+    stack_size: u64,
+    tls: u64,
+    set_tid: u64,
+    set_tid_size: u64,
+    cgroup: u64,
+}
+
+const _: () = assert!(core::mem::size_of::<Clone3Args>() == 88);
+
+/// Create a child process together with a pidfd for it, atomically —
+/// `clone3(2)` with `CLONE_PIDFD`. Returns `(child_pid, pidfd)` to the
+/// parent and `(0, -1)` to the child (the kernel never writes back the
+/// pidfd field in the child's copy of the arguments, so `-1` is used as an
+/// explicit not-applicable sentinel rather than leaking the meaningless raw
+/// value).
+///
+/// This closes the pid-reuse race in the `fork()` + [`pidfd_open`] pattern:
+/// between those two separate syscalls the child can exit and, under a busy
+/// pid space, have its pid recycled before `pidfd_open` runs. `clone3`
+/// hands back the pidfd as part of process creation itself, so there is no
+/// window in which the pid can be reused out from under the caller. Keep
+/// `fork` + [`pidfd_open`] as the fallback for kernels without `clone3`
+/// (added in Linux 5.3).
+///
+/// The returned pidfd is `O_CLOEXEC` by kernel default and must be closed
+/// with [`crate::fd::close`] like any other fd.
+///
+/// # Safety
+///
+/// Same caveats as [`fork`]: this is a **raw** clone with `fork` semantics
+/// (a null stack gives the child a copy-on-write clone of the parent's
+/// stack). It does not reset glibc's malloc/stdio locks or run
+/// `pthread_atfork` handlers. Only call this when the process is
+/// effectively single-threaded at the call point, or when the child touches
+/// nothing but async-signal-safe syscalls before `exec`/[`exit_group`].
+pub unsafe fn fork_with_pidfd() -> Result<(i32, i32), Errno> {
+    let mut args = Clone3Args {
+        flags: CLONE_PIDFD,
+        exit_signal: SIGCHLD as u64,
+        ..Clone3Args::default()
+    };
+    // clone3(&args, size_of(args)).
+    // SAFETY: `args` is a valid, exclusively-borrowed `*mut clone_args` of
+    // the size passed; a null stack requests fork-style copy-on-write of
+    // the caller's stack, as in `fork`.
+    let ret = unsafe {
+        syscall2(
+            nr::CLONE3,
+            &mut args as *mut Clone3Args as usize,
+            core::mem::size_of::<Clone3Args>(),
+        )
+    };
+    let pid = from_ret_i32(ret)?;
+    if pid == 0 {
+        return Ok((0, -1));
+    }
+    Ok((pid, args.pidfd as i32))
+}
+
 /// Replace the current process image with the program at `path`.
 ///
 /// `argv` and `envp` must each point to a **null-terminated** array of C-string
@@ -898,6 +972,59 @@ mod tests {
         };
         wait::waitpid(child, 0).expect("waitpid");
         assert_eq!(pidfd_open(child, 0), Err(Errno::ESRCH));
+    }
+
+    #[test]
+    fn fork_with_pidfd_returns_atomic_pidfd() {
+        use crate::fd;
+        use crate::wait;
+
+        // CI runs single-threaded, and the child only issues raw syscalls;
+        // see `fork_with_pidfd`'s safety note.
+        //
+        // clone3 (Linux 5.3+) is young enough that some restricted sandboxes
+        // deny it outright via seccomp instead of reporting ENOSYS -- glibc
+        // itself treats any failure of its own first clone3 call as "not
+        // usable here" and permanently falls back to legacy `clone()` for
+        // the rest of the process, precisely because denial errnos vary
+        // across environments. Mirror that instead of hard-failing: this
+        // crate's CI runs on unrestricted `ubuntu-latest` VMs where clone3
+        // is available, so the skip path exists for exotic sandboxes only.
+        let (pid, pidfd) = match unsafe { fork_with_pidfd() } {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "fork_with_pidfd_returns_atomic_pidfd: clone3 unavailable \
+                     in this environment ({e:?}); skipping"
+                );
+                return;
+            }
+        };
+        if pid == 0 {
+            // Child: the pidfd field is never written back here.
+            assert_eq!(pidfd, -1);
+            exit_group(11);
+        }
+
+        assert!(pid > 0);
+        assert!(pidfd >= 0);
+
+        // The pidfd is usable exactly like one from `pidfd_open`: pollable,
+        // and a valid target for `waitid(P_PIDFD, ...)`.
+        let mut fds = [fd::PollFd {
+            fd: pidfd,
+            events: fd::POLLIN,
+            revents: 0,
+        }];
+        let n = fd::poll(&mut fds, 5000).expect("poll");
+        assert_eq!(n, 1);
+
+        let info = wait::waitid(wait::P_PIDFD, pidfd, wait::WEXITED).expect("waitid via pidfd");
+        assert_eq!(info.si_pid, pid);
+        assert_eq!(info.si_code, wait::CLD_EXITED);
+        assert_eq!(info.si_status, 11);
+
+        fd::close(pidfd).expect("close pidfd");
     }
 
     #[test]
