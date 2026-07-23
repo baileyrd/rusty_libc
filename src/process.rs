@@ -76,6 +76,83 @@ pub fn getgroups(buf: &mut [u32]) -> Result<&[u32], Errno> {
     Ok(&buf[..n])
 }
 
+// --- privilege: setuid/setgid family ----------------------------------------
+
+/// Sentinel for [`setresuid`]/[`setresgid`]: leave that particular id
+/// unchanged. Matches the kernel's own `(uid_t)-1`/`(gid_t)-1` convention.
+pub const KEEP_ID: u32 = u32::MAX;
+
+/// Set the calling process's real, effective, **and** saved user id to
+/// `uid` in one call. Requires `CAP_SETUID` (or dropping privilege from
+/// uid `0`); an unprivileged process may only set its ids to its current
+/// real, effective, or saved uid.
+pub fn setuid(uid: u32) -> Result<(), Errno> {
+    // SAFETY: plain integer argument, no memory referenced.
+    let ret = unsafe { syscall1(nr::SETUID, uid as usize) };
+    from_ret(ret).map(|_| ())
+}
+
+/// Set the calling process's real, effective, **and** saved group id to
+/// `gid` in one call. Same privilege rule as [`setuid`], via `CAP_SETGID`.
+pub fn setgid(gid: u32) -> Result<(), Errno> {
+    // SAFETY: plain integer argument, no memory referenced.
+    let ret = unsafe { syscall1(nr::SETGID, gid as usize) };
+    from_ret(ret).map(|_| ())
+}
+
+/// Independently set the real, effective, and saved user ids; pass
+/// [`KEEP_ID`] for any of the three to leave it unchanged. The general
+/// primitive [`setuid`]/[`seteuid`] are convenience shorthands over —
+/// e.g. dropping privilege irrevocably (no way back to the old effective
+/// id) needs all three set together, which `setuid` alone cannot express
+/// on its own without also touching the saved id as a side effect.
+pub fn setresuid(ruid: u32, euid: u32, suid: u32) -> Result<(), Errno> {
+    // SAFETY: plain integer arguments, no memory referenced.
+    let ret = unsafe { syscall3(nr::SETRESUID, ruid as usize, euid as usize, suid as usize) };
+    from_ret(ret).map(|_| ())
+}
+
+/// Independently set the real, effective, and saved group ids; pass
+/// [`KEEP_ID`] for any of the three to leave it unchanged. See
+/// [`setresuid`] for why this exists alongside [`setgid`]/[`setegid`].
+pub fn setresgid(rgid: u32, egid: u32, sgid: u32) -> Result<(), Errno> {
+    // SAFETY: plain integer arguments, no memory referenced.
+    let ret = unsafe { syscall3(nr::SETRESGID, rgid as usize, egid as usize, sgid as usize) };
+    from_ret(ret).map(|_| ())
+}
+
+/// Set only the calling process's *effective* user id to `euid`, leaving
+/// the real and saved ids untouched — the shorthand a shell wants to
+/// temporarily assume then later relinquish a privilege (e.g. a setuid
+/// helper that needs elevated access for one operation). There is no
+/// dedicated `seteuid(2)` syscall on Linux; this is
+/// `setresuid(KEEP_ID, euid, KEEP_ID)`, the same substitution glibc's own
+/// `seteuid` makes.
+#[inline]
+pub fn seteuid(euid: u32) -> Result<(), Errno> {
+    setresuid(KEEP_ID, euid, KEEP_ID)
+}
+
+/// Set only the calling process's *effective* group id to `egid`. See
+/// [`seteuid`]; this is `setresgid(KEEP_ID, egid, KEEP_ID)`.
+#[inline]
+pub fn setegid(egid: u32) -> Result<(), Errno> {
+    setresgid(KEEP_ID, egid, KEEP_ID)
+}
+
+/// Set the calling process's complete supplementary group list to `gids`
+/// (replacing it, not appending). Requires `CAP_SETGID`. The counterpart
+/// to [`getgroups`] — dropping supplementary groups (an empty slice) is
+/// part of the standard privilege-dropping sequence alongside
+/// [`setresgid`]/[`setresuid`] (groups must be dropped *before* the real
+/// uid, while the process still has `CAP_SETGID`).
+pub fn setgroups(gids: &[u32]) -> Result<(), Errno> {
+    // SAFETY: `gids` is a valid slice of `gids.len()` `u32`s (matching the
+    // kernel's `gid_t`), read-only for the kernel.
+    let ret = unsafe { syscall2(nr::SETGROUPS, gids.len(), gids.as_ptr() as usize) };
+    from_ret(ret).map(|_| ())
+}
+
 // --- scheduling priority ("nice") ------------------------------------------
 
 /// [`getpriority`]/[`setpriority`] `which`: `who` is a pid (`0` = self).
@@ -750,6 +827,120 @@ mod tests {
         // A larger-than-needed buffer still reports exactly `n` entries.
         let mut spare = std::vec![0u32; n + 4];
         assert_eq!(getgroups(&mut spare).expect("getgroups spare").len(), n);
+    }
+
+    #[test]
+    fn setuid_family_noop_transitions_are_always_permitted() {
+        use crate::wait;
+
+        // Setting an id to its own current value (or, for the resuid/resgid
+        // form, passing KEEP_ID for every argument) is permitted for every
+        // caller regardless of privilege -- unlike an actual transition to a
+        // *different* id, this needs no privilege gating. Still isolated in
+        // a forked child: these mutate real process-credential state, and
+        // this crate's own dev sandbox happens to run as root, but a
+        // consumer's CI must not be assumed to. See `fork`'s safety note.
+        match unsafe { fork() }.expect("fork") {
+            0 => {
+                let (uid, gid) = (getuid(), getgid());
+
+                if setuid(uid).is_err() || getuid() != uid {
+                    exit_group(1);
+                }
+                if setgid(gid).is_err() || getgid() != gid {
+                    exit_group(2);
+                }
+                if setresuid(uid, uid, uid).is_err() || getuid() != uid {
+                    exit_group(3);
+                }
+                if setresgid(gid, gid, gid).is_err() || getgid() != gid {
+                    exit_group(4);
+                }
+                // All-KEEP_ID: an explicit no-op, exercising the sentinel.
+                if setresuid(KEEP_ID, KEEP_ID, KEEP_ID).is_err() || getuid() != uid {
+                    exit_group(5);
+                }
+                if setresgid(KEEP_ID, KEEP_ID, KEEP_ID).is_err() || getgid() != gid {
+                    exit_group(6);
+                }
+
+                exit_group(0);
+            }
+            pid => {
+                let (_, status) = wait::waitpid(pid, 0).expect("waitpid");
+                assert!(wait::wifexited(status), "child did not exit normally");
+                assert_eq!(wait::wexitstatus(status), 0, "child assertion failed");
+            }
+        }
+    }
+
+    #[test]
+    fn seteuid_setegid_transition_when_privileged() {
+        use crate::wait;
+
+        // A transition to a genuinely *different* id needs CAP_SETUID/
+        // CAP_SETGID; only assert it actually took effect when running
+        // privileged (issue the syscalls unconditionally either way, so a
+        // regression in argument order/flags still shows up as an
+        // unexpected error). Isolated in a forked child since a successful
+        // transition drops capabilities for the rest of that process.
+        match unsafe { fork() }.expect("fork") {
+            0 => {
+                let target_uid = getuid().wrapping_add(1);
+                match seteuid(target_uid) {
+                    Ok(()) if geteuid() == target_uid => {}
+                    Ok(()) => exit_group(1),
+                    Err(Errno::EPERM) => {} // unprivileged: expected, not a crate bug
+                    Err(_) => exit_group(2),
+                }
+
+                let target_gid = getgid().wrapping_add(1);
+                match setegid(target_gid) {
+                    Ok(()) if getegid() == target_gid => {}
+                    Ok(()) => exit_group(3),
+                    Err(Errno::EPERM) => {}
+                    Err(_) => exit_group(4),
+                }
+
+                exit_group(0);
+            }
+            pid => {
+                let (_, status) = wait::waitpid(pid, 0).expect("waitpid");
+                assert!(wait::wifexited(status), "child did not exit normally");
+                assert_eq!(wait::wexitstatus(status), 0, "child assertion failed");
+            }
+        }
+    }
+
+    #[test]
+    fn setgroups_roundtrip_when_privileged() {
+        use crate::wait;
+
+        // Same privilege-gating shape as `seteuid_setegid_transition_when_privileged`:
+        // CAP_SETGID is needed to actually change the group list, so only
+        // assert the new list took effect when privileged.
+        match unsafe { fork() }.expect("fork") {
+            0 => {
+                let target = [100u32, 200];
+                match setgroups(&target) {
+                    Ok(()) => {
+                        let mut buf = [0u32; 2];
+                        match getgroups(&mut buf) {
+                            Ok(got) if got == target => {}
+                            _ => exit_group(1),
+                        }
+                    }
+                    Err(Errno::EPERM) => {} // unprivileged: expected, not a crate bug
+                    Err(_) => exit_group(2),
+                }
+                exit_group(0);
+            }
+            pid => {
+                let (_, status) = wait::waitpid(pid, 0).expect("waitpid");
+                assert!(wait::wifexited(status), "child did not exit normally");
+                assert_eq!(wait::wexitstatus(status), 0, "child assertion failed");
+            }
+        }
     }
 
     #[test]
