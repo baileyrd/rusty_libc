@@ -10,6 +10,8 @@
 
 use crate::arch::Errno;
 use crate::fd::ioctl;
+use crate::fs;
+use core::ffi::CStr;
 
 /// Number of control characters in the kernel `struct termios`.
 pub const NCCS: usize = 19;
@@ -301,6 +303,61 @@ pub fn isatty(fd: i32) -> bool {
     tcgetattr(fd).is_ok()
 }
 
+/// Format `/proc/self/fd/{fd}\0` into `out`, returning it as a `CStr`. Not a
+/// distinct syscall: this is exactly how glibc's own `ttyname`/`ttyname_r`
+/// resolve an fd to a path, via `readlink` on the `/proc` fd-symlink.
+fn proc_fd_path(fd: i32, out: &mut [u8; 32]) -> &CStr {
+    const PREFIX: &[u8] = b"/proc/self/fd/";
+    out[..PREFIX.len()].copy_from_slice(PREFIX);
+    let mut pos = PREFIX.len();
+
+    if fd < 0 {
+        out[pos] = b'-';
+        pos += 1;
+    }
+    let start = pos;
+    let mut n = fd.unsigned_abs();
+    loop {
+        out[pos] = b'0' + (n % 10) as u8;
+        pos += 1;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out[start..pos].reverse();
+
+    out[pos] = 0;
+    CStr::from_bytes_with_nul(&out[..=pos]).unwrap()
+}
+
+/// The path of the terminal device `fd` refers to, written into `buf`
+/// (typically sized `64` or more — `/dev/pts/N`-style paths are short, but a
+/// too-small `buf` fails with [`Errno::ERANGE`] rather than truncating).
+///
+/// Fails with [`Errno::ENOTTY`] if `fd` isn't a terminal at all — the same
+/// check [`isatty`] makes — since resolving *some* path for a non-tty fd
+/// (its readlink target always exists) wouldn't match `ttyname`'s contract.
+pub fn ttyname(fd: i32, buf: &mut [u8]) -> Result<&[u8], Errno> {
+    if !isatty(fd) {
+        return Err(Errno::ENOTTY);
+    }
+    let mut path_buf = [0u8; 32];
+    let path = proc_fd_path(fd, &mut path_buf);
+    let full_len = buf.len();
+    // Unlike a plain readlink, don't hand back a possibly-truncated path:
+    // `readlink(2)` fills as many bytes as fit and reports that count with
+    // no error, so a result exactly as long as `buf` is indistinguishable
+    // from "fit perfectly" -- treat it as "didn't fit" instead, matching
+    // glibc's own `ttyname_r` contract.
+    let target = fs::readlinkat(fs::AT_FDCWD, path, buf)?;
+    if target.len() == full_len {
+        Err(Errno::ERANGE)
+    } else {
+        Ok(target)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,6 +369,36 @@ mod tests {
         assert_eq!(tcgetattr(r), Err(Errno(25))); // ENOTTY
         crate::fd::close(r).unwrap();
         crate::fd::close(w).unwrap();
+    }
+
+    #[test]
+    fn ttyname_on_a_pipe_is_enotty() {
+        let (r, w) = crate::fd::pipe2(0).unwrap();
+        let mut buf = [0u8; 64];
+        assert_eq!(ttyname(r, &mut buf), Err(Errno::ENOTTY));
+        crate::fd::close(r).unwrap();
+        crate::fd::close(w).unwrap();
+    }
+
+    #[test]
+    fn ttyname_on_a_pty_slave_reports_a_dev_pts_path() {
+        use std::os::fd::AsRawFd;
+        let (_m, s) = open_pty();
+        let mut buf = [0u8; 64];
+        let path = ttyname(s.as_raw_fd(), &mut buf).expect("ttyname");
+        let path = core::str::from_utf8(path).expect("utf8");
+        assert!(
+            path.starts_with("/dev/pts/"),
+            "expected a /dev/pts/N path, got {path:?}"
+        );
+    }
+
+    #[test]
+    fn ttyname_too_small_a_buffer_is_erange() {
+        use std::os::fd::AsRawFd;
+        let (_m, s) = open_pty();
+        let mut buf = [0u8; 1];
+        assert_eq!(ttyname(s.as_raw_fd(), &mut buf), Err(Errno::ERANGE));
     }
 
     #[test]
