@@ -32,7 +32,7 @@ assertions), not glibc's.
 | `wait` | `waitpid`/`waitpid_rusage` (via `wait4`), `waitid`/`waitid_rusage` (with `WNOWAIT` and a `Siginfo`), `getrusage` (`RUSAGE_SELF`/`RUSAGE_CHILDREN`), `Rusage`, and the `W*` status decoders |
 | `rand` | `getrandom` (`GRND_NONBLOCK`/`GRND_RANDOM`) |
 | `mmap` | `mmap`/`munmap`/`mprotect`/`madvise`/`mlock`/`munlock`/`msync`; `PROT_*`/`MAP_*`/`MADV_*`/`MS_*` constants |
-| `ptrace` | `ptrace_traceme`/`ptrace_seize`/`ptrace_cont`/`ptrace_singlestep`/`ptrace_detach`/`ptrace_setoptions`/`ptrace_getregset`/`ptrace_setregset`, `GpRegs` (kernel `struct user_regs_struct`/`user_pt_regs`) — tracer/tracee lifecycle and portable register access, scoped by [ADR-0004](docs/adr/0004-ptrace-scope-and-shape.md) |
+| `ptrace` | `ptrace_traceme`/`ptrace_seize`/`ptrace_cont`/`ptrace_singlestep`/`ptrace_detach`/`ptrace_setoptions`/`ptrace_getregset`/`ptrace_setregset`/`ptrace_syscall`, `is_syscall_stop`, `GpRegs` (kernel `struct user_regs_struct`/`user_pt_regs`) — tracer/tracee lifecycle, portable register access, and syscall-entry/exit tracing, scoped by [ADR-0004](docs/adr/0004-ptrace-scope-and-shape.md) |
 | `termios` | kernel `Termios`, `tcgetattr`/`tcsetattr`(`_with`), `make_raw`, `tcflush`/`tcdrain`/`tcflow`/`tcsendbreak`, tty pgrp queries, `tcgetsid`, `isatty`, `ttyname` (via `/proc/self/fd/N`, same as glibc), full `c_cc`/flag constants |
 | `tty` | `Winsize` window-size query, `openpty` (pty pair allocation) |
 | `rlimit` | `prlimit`/`getrlimit`/`setrlimit`, `RLIMIT_*` |

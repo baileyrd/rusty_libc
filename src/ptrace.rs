@@ -12,9 +12,7 @@
 //! [`crate::process::process_vm_writev`], which read/write arbitrary-length
 //! ranges without an attach), the legacy `PTRACE_ATTACH` (superseded by
 //! [`ptrace_seize`]) and `PTRACE_GETREGS`/`SETREGS` (superseded by
-//! [`ptrace_getregset`]/[`ptrace_setregset`]). Syscall-entry/exit tracing
-//! (`PTRACE_SYSCALL`) is tracked as a follow-on (see the crate's issue
-//! tracker), not this module yet.
+//! [`ptrace_getregset`]/[`ptrace_setregset`]).
 //!
 //! # Thread affinity
 //!
@@ -27,11 +25,13 @@
 
 use crate::arch::nr;
 use crate::arch::{from_ret, syscall4, Errno};
+use crate::signal::SIGTRAP;
 
 const PTRACE_TRACEME: i32 = 0;
 const PTRACE_CONT: i32 = 7;
 const PTRACE_SINGLESTEP: i32 = 9;
 const PTRACE_DETACH: i32 = 17;
+const PTRACE_SYSCALL: i32 = 24;
 const PTRACE_SETOPTIONS: i32 = 0x4200;
 const PTRACE_GETREGSET: i32 = 0x4204;
 const PTRACE_SETREGSET: i32 = 0x4205;
@@ -46,6 +46,13 @@ const NT_PRSTATUS: i32 = 1;
 /// tracer exits, instead of leaving an orphaned, permanently-stopped
 /// process behind.
 pub const PTRACE_O_EXITKILL: i32 = 1 << 20;
+
+/// `PTRACE_SETOPTIONS`/[`ptrace_seize`] option: tag syscall-stops with
+/// `SIGTRAP | 0x80` instead of plain `SIGTRAP`, so [`is_syscall_stop`] can
+/// tell one apart from a real `SIGTRAP` the tracee raised itself. Required
+/// for [`ptrace_syscall`]-driven tracing to be reliable — without it, the
+/// two stop kinds are indistinguishable.
+pub const PTRACE_O_TRACESYSGOOD: i32 = 1;
 
 /// Kernel `struct iovec`-shaped `{ base, len }` pair describing a local
 /// buffer, for [`ptrace_getregset`]/[`ptrace_setregset`]'s `data` argument.
@@ -257,6 +264,40 @@ pub fn ptrace_singlestep(pid: i32, signal: i32) -> Result<(), Errno> {
     from_ret(ret).map(|_| ())
 }
 
+/// Resume a stopped tracee `pid` until the next syscall-entry-or-exit
+/// boundary, then stop it again, optionally re-injecting `signal` (`0` for
+/// none). Same shape and preconditions as [`ptrace_cont`] — the primitive an
+/// `strace`-style tracer is built on.
+///
+/// Reliably telling a syscall-stop apart from an ordinary signal-stop (both
+/// report as `SIGTRAP` otherwise) needs [`PTRACE_O_TRACESYSGOOD`] set first
+/// via [`ptrace_setoptions`] (or [`ptrace_seize`]'s `options`); see
+/// [`is_syscall_stop`].
+///
+/// At a syscall-stop, `pid`'s syscall number and (at entry) arguments or
+/// (at exit) return value are readable via [`ptrace_getregset`] — x86_64's
+/// `orig_rax` or aarch64's `regs[8]`/`x8` for the number, reliably across
+/// both entry and exit, and the argument/return-value registers per the
+/// platform's normal syscall calling convention. Neither this function nor
+/// [`is_syscall_stop`] track *which* of entry or exit a given stop is —
+/// `PTRACE_SYSCALL` stops strictly alternate entry/exit/entry/exit, so a
+/// tracer driving its own `wait4` loop already has to track that sequencing
+/// itself, the same way it must for any other multi-step wait protocol in
+/// this crate.
+pub fn ptrace_syscall(pid: i32, signal: i32) -> Result<(), Errno> {
+    // SAFETY: SYSCALL ignores addr; `data` carries the signal to re-inject.
+    let ret = unsafe {
+        syscall4(
+            nr::PTRACE,
+            PTRACE_SYSCALL as usize,
+            pid as usize,
+            0,
+            signal as usize,
+        )
+    };
+    from_ret(ret).map(|_| ())
+}
+
 /// Resume and detach from tracee `pid`, optionally re-injecting `signal`
 /// (`0` for none). `pid` stops being traced by this process; it keeps
 /// running (or is reaped normally by an eventual [`crate::wait::waitpid`]
@@ -335,6 +376,16 @@ pub fn ptrace_setregset(pid: i32, regs: &GpRegs) -> Result<(), Errno> {
         )
     };
     from_ret(ret).map(|_| ())
+}
+
+/// True if `status` (as returned by [`crate::wait::waitpid`]) reports a
+/// [`ptrace_syscall`]-driven syscall-stop, as opposed to an ordinary
+/// signal-stop. Requires [`PTRACE_O_TRACESYSGOOD`] to have been set on the
+/// tracee first (via [`ptrace_setoptions`] or [`ptrace_seize`]'s `options`)
+/// — without it, a syscall-stop and a real `SIGTRAP` the tracee raised
+/// itself both report as plain `SIGTRAP`, and this always returns `false`.
+pub fn is_syscall_stop(status: i32) -> bool {
+    crate::wait::wifstopped(status) && crate::wait::wstopsig(status) == (SIGTRAP | 0x80)
 }
 
 #[cfg(test)]
@@ -462,6 +513,125 @@ mod tests {
                 assert!(ptrace_cont(pid, 0).is_err());
 
                 fd::close(block_w).ok();
+                let (reaped, status) = wait::waitpid(pid, 0).expect("waitpid exit");
+                assert_eq!(reaped, pid);
+                assert!(wait::wifexited(status));
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    fn syscall_nr(regs: &GpRegs) -> u64 {
+        regs.orig_rax
+    }
+    #[cfg(target_arch = "aarch64")]
+    fn syscall_nr(regs: &GpRegs) -> u64 {
+        regs.regs[8]
+    }
+
+    #[test]
+    fn ptrace_syscall_reports_entry_and_exit_stops() {
+        // Same TRACEME + self-SIGSTOP handshake as the lifecycle test, but
+        // once stopped, drives the child through one full getpid() syscall
+        // under PTRACE_SYSCALL instead of just letting it run free -- this
+        // exercises the entry-stop/exit-stop pair ptrace_syscall produces,
+        // and is_syscall_stop's SIGTRAP|0x80 disambiguation.
+        const TRACEME_UNSUPPORTED: i32 = 90;
+
+        match unsafe { fork() }.expect("fork") {
+            0 => match ptrace_traceme() {
+                Ok(()) => {
+                    process::kill(process::getpid(), SIGSTOP).ok();
+                    // The syscall the parent will observe entry/exit for.
+                    let _ = process::getpid();
+                    exit_group(0);
+                }
+                Err(_) => exit_group(TRACEME_UNSUPPORTED),
+            },
+            pid => {
+                let (reaped, status) = wait::waitpid(pid, 0).expect("waitpid stop");
+                assert_eq!(reaped, pid);
+
+                if wait::wifexited(status) && wait::wexitstatus(status) == TRACEME_UNSUPPORTED {
+                    // See the qemu-user note in
+                    // traceme_stop_getregset_setregset_cont_roundtrip.
+                    return;
+                }
+                assert!(wait::wifstopped(status));
+                assert_eq!(wait::wstopsig(status), SIGSTOP);
+
+                ptrace_setoptions(pid, PTRACE_O_TRACESYSGOOD).expect("setoptions");
+
+                // Step through syscall-stops via PTRACE_SYSCALL until the
+                // child's explicit getpid() call shows up. Exactly how many
+                // stops occur between the self-SIGSTOP handshake and that
+                // point isn't asserted -- the self-signal itself is a
+                // syscall the tracee was still inside of when it stopped,
+                // so whether its own exit surfaces as a distinct
+                // syscall-stop first is a kernel-internal detail this test
+                // doesn't need to pin down, only that a syscall-stop
+                // reporting GETPID eventually does, exactly once, followed
+                // immediately by its matching exit-stop.
+                let mut steps = 0;
+                let entry_regs = loop {
+                    steps += 1;
+                    assert!(steps <= 8, "did not observe a getpid() entry-stop in time");
+                    ptrace_syscall(pid, 0).expect("ptrace_syscall");
+                    let (reaped, status) = wait::waitpid(pid, 0).expect("waitpid stop");
+                    assert_eq!(reaped, pid);
+                    assert!(is_syscall_stop(status), "expected a syscall-stop");
+                    let regs = ptrace_getregset(pid).expect("getregset");
+                    if syscall_nr(&regs) == nr::GETPID as u64 {
+                        break regs;
+                    }
+                };
+                assert_eq!(syscall_nr(&entry_regs), nr::GETPID as u64);
+
+                // Resume to that same syscall's exit.
+                ptrace_syscall(pid, 0).expect("ptrace_syscall to exit");
+                let (reaped, status) = wait::waitpid(pid, 0).expect("waitpid exit-stop");
+                assert_eq!(reaped, pid);
+                assert!(is_syscall_stop(status), "expected a syscall-exit-stop");
+                let exit_regs = ptrace_getregset(pid).expect("getregset at exit");
+                assert_eq!(syscall_nr(&exit_regs), nr::GETPID as u64);
+
+                // Let it run free the rest of the way to its own exit_group.
+                ptrace_cont(pid, 0).expect("cont");
+                let (reaped, status) = wait::waitpid(pid, 0).expect("waitpid final exit");
+                assert_eq!(reaped, pid);
+                assert!(wait::wifexited(status));
+                assert_eq!(wait::wexitstatus(status), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn is_syscall_stop_is_false_for_an_ordinary_signal_stop() {
+        // A plain signal-stop (this test's own SIGSTOP handshake, with
+        // TRACESYSGOOD never set) must not be misreported as a
+        // syscall-stop -- the two share the same base SIGTRAP-or-not
+        // ambiguity is_syscall_stop exists to resolve.
+        const TRACEME_UNSUPPORTED: i32 = 90;
+
+        match unsafe { fork() }.expect("fork") {
+            0 => match ptrace_traceme() {
+                Ok(()) => {
+                    process::kill(process::getpid(), SIGSTOP).ok();
+                    exit_group(0);
+                }
+                Err(_) => exit_group(TRACEME_UNSUPPORTED),
+            },
+            pid => {
+                let (reaped, status) = wait::waitpid(pid, 0).expect("waitpid stop");
+                assert_eq!(reaped, pid);
+
+                if wait::wifexited(status) && wait::wexitstatus(status) == TRACEME_UNSUPPORTED {
+                    return;
+                }
+                assert!(wait::wifstopped(status));
+                assert!(!is_syscall_stop(status));
+
+                ptrace_cont(pid, 0).expect("cont");
                 let (reaped, status) = wait::waitpid(pid, 0).expect("waitpid exit");
                 assert_eq!(reaped, pid);
                 assert!(wait::wifexited(status));
