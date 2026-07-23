@@ -35,6 +35,7 @@ pub mod nr {
     pub const EXECVE: usize = 59;
     pub const KILL: usize = 62;
     pub const MEMFD_CREATE: usize = 319;
+    pub const GETRANDOM: usize = 318;
     pub const WAIT4: usize = 61;
     pub const GETRUSAGE: usize = 98;
     pub const FCNTL: usize = 72;
