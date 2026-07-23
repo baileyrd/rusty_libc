@@ -486,6 +486,74 @@ pub unsafe fn execveat(
     }
 }
 
+/// `clone(2)` flag: share the calling process's memory (address space) with
+/// the child instead of copy-on-write duplicating it.
+const CLONE_VM: usize = 0x100;
+/// `clone(2)` flag: suspend the parent until the child calls `execve` or
+/// exits.
+const CLONE_VFORK: usize = 0x4000;
+
+/// Fork via `CLONE_VFORK | CLONE_VM` and immediately `execve` in the child —
+/// narrower than raw [`fork`], and safe to call from a multithreaded parent.
+///
+/// [`fork`]'s own safety note names the hazard this avoids: a raw
+/// `clone(SIGCHLD)` child gets a copy-on-write duplicate of the parent's
+/// address space, so if another parent thread holds an allocator lock at
+/// the instant of the fork, the child inherits it locked and deadlocks the
+/// first time it needs the allocator, before it ever reaches `exec`.
+/// `CLONE_VM` shares the address space instead of duplicating it, and
+/// `CLONE_VFORK` suspends the parent until the child calls `execve`/exits —
+/// together, only one of the two ever runs at a time, so there is no
+/// window in which a parent thread's lock and a child's allocation can
+/// race at all. This is the technique `posix_spawn` implementations use
+/// for the fork-then-exec case, which is the overwhelming majority of a
+/// shell's forks.
+///
+/// Because `CLONE_VM` gives the child *actual* shared memory with the
+/// parent (not a copy-on-write duplicate the way plain [`fork`] does),
+/// ordinary Rust code in the child is not a safe way to reach that
+/// `execve`: the child would need to *return* through call frames that
+/// live on the same stack the parent's own continuation resumes through,
+/// and the compiler is free to reuse a stack slot between "this local is
+/// only live in the child branch" and "this local is only live in the
+/// parent's continuation" — correct when at most one of those branches
+/// ever executes per call, wrong here because both really do run,
+/// sequentially, against the same physical memory. [`crate::arch::vfork_execve`]
+/// does the entire clone-then-execve as one hand-written asm sequence for
+/// exactly this reason — see its doc comment for the full account — and
+/// this function is a thin, typed wrapper over it: it never returns
+/// control to arbitrary caller code in the child, always either
+/// `execve`ing or calling `exit_group(127)` (the shell "command not found"
+/// convention) if that fails.
+///
+/// Returns the child's pid on success. Because nothing crosses back from
+/// the child to the parent besides that pid (any richer channel would
+/// reintroduce the shared-memory hazard above), an `execve` failure is not
+/// distinguishable here from `clone` itself failing — both surface as
+/// `Err`; the same `Err(errno)` that `clone(2)` itself produced when it's a
+/// `clone` failure, or the child's `exit_group(127)` distinguishes an exec
+/// failure after the fact via [`crate::wait`] the same way any fork+exec
+/// caller already must.
+///
+/// # Safety
+/// `path`, `argv`, `envp` must satisfy the same contract as [`execve`].
+pub unsafe fn vfork_exec(
+    path: &CStr,
+    argv: *const *const c_char,
+    envp: *const *const c_char,
+) -> Result<i32, Errno> {
+    // SAFETY: forwarded to the caller's contract on path/argv/envp.
+    let ret = unsafe {
+        crate::arch::vfork_execve(
+            CLONE_VFORK | CLONE_VM | SIGCHLD,
+            path.as_ptr().cast::<u8>(),
+            argv.cast::<*const u8>(),
+            envp.cast::<*const u8>(),
+        )
+    };
+    from_ret_i32(ret)
+}
+
 /// A null-terminated array of C-string pointers, owned and kept alive
 /// alongside it — the shape [`execve`]/[`execveat`] need for both `argv` and
 /// `envp` (they are structurally identical: a NUL-terminated list of C
@@ -835,6 +903,30 @@ mod tests {
         assert_eq!(e, Errno::ENOENT);
     }
 
+    #[test]
+    fn vfork_exec_missing_file_exits_127() {
+        // Unlike `execve_missing_file_returns_enoent`, this always forks
+        // (vfork_exec has no "just call it inline" mode), and unlike a bare
+        // `execve` call, an exec failure inside the child can't propagate
+        // back through the `Result` here -- see `vfork_exec`'s doc comment
+        // for why. `clone` itself still succeeds even with a bad path (the
+        // failure only shows up once the child tries to exec it), so this
+        // returns `Ok`, and the caller checks the exit-127 convention via
+        // `waitpid` -- a missing path never actually execs a real image,
+        // so this runs identically on every arch/emulator, no need to gate
+        // it to x86_64.
+        use crate::wait;
+
+        let path = c"/nonexistent/rusty_libc/prog";
+        let argv: [*const c_char; 2] = [path.as_ptr(), core::ptr::null()];
+        let envp: [*const c_char; 1] = [core::ptr::null()];
+        let pid = unsafe { vfork_exec(path, argv.as_ptr(), envp.as_ptr()) }.expect("vfork_exec");
+        let (wpid, status) = wait::waitpid(pid, 0).expect("waitpid");
+        assert_eq!(wpid, pid);
+        assert!(wait::wifexited(status));
+        assert_eq!(wait::wexitstatus(status), 127);
+    }
+
     // The success path replaces the child image with a real binary. Gate it to
     // x86_64 so it runs natively; under the aarch64 qemu-user CI job a nested
     // execve of a host binary is not reliably emulated.
@@ -864,6 +956,30 @@ mod tests {
                 assert_eq!(wait::wexitstatus(status), 7);
             }
         }
+    }
+
+    // Gated to x86_64 for the same reason as `execve_replaces_child_image`: a
+    // nested execve of a host binary isn't reliably emulated under the
+    // aarch64 qemu-user CI job.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn vfork_exec_replaces_child_image_and_reports_no_error() {
+        use crate::wait;
+
+        let path = c"/bin/sh";
+        let argv: [*const c_char; 4] = [
+            c"/bin/sh".as_ptr(),
+            c"-c".as_ptr(),
+            c"exit 7".as_ptr(),
+            core::ptr::null(),
+        ];
+        let envp: [*const c_char; 1] = [core::ptr::null()];
+
+        let pid = unsafe { vfork_exec(path, argv.as_ptr(), envp.as_ptr()) }.expect("vfork_exec");
+        let (wpid, status) = wait::waitpid(pid, 0).expect("waitpid");
+        assert_eq!(wpid, pid);
+        assert!(wait::wifexited(status));
+        assert_eq!(wait::wexitstatus(status), 7);
     }
 
     #[test]
