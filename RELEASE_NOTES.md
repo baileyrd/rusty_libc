@@ -11,6 +11,23 @@ Stay up to date with the latest changes to rusty_libc.
 
 ---
 
+## Round 3, batch 4: timerfd, atomic pidfd via clone3, and a safe vfork — [PR #56](https://github.com/baileyrd/rusty_libc/pull/56)–[#58](https://github.com/baileyrd/rusty_libc/pull/58)
+
+**July 23, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/fa43cfc...4c561a1)**
+
+The last three items on REVIEW.md's Round 3 list to actually ship code (the fourth, a `signalfd` design question, is a decision writeup — see below).
+
+**Added**
+- `time::timerfd_create`/`timerfd_settime`/`timerfd_gettime` + `Itimerspec` — a timeout that composes directly with `poll` instead of an asynchronously delivered `SIGALRM` with its own signal-safety rules. ([#30](https://github.com/baileyrd/rusty_libc/issues/30), [PR #56](https://github.com/baileyrd/rusty_libc/pull/56))
+- `process::fork_with_pidfd` via `clone3`/`CLONE_PIDFD` — closes the pid-reuse race in `fork()` + `pidfd_open()`: between those two separate syscalls the child can exit and, under a busy pid space, have its pid recycled before `pidfd_open` runs. `clone3` hands back the pidfd atomically as part of process creation. `fork` + `pidfd_open` remains available for kernels without `clone3` (Linux 5.3+). ([#20](https://github.com/baileyrd/rusty_libc/issues/20), [PR #57](https://github.com/baileyrd/rusty_libc/pull/57))
+- `process::vfork_exec` via `CLONE_VFORK`\|`CLONE_VM` — a narrower `fork` for the fork-then-exec case, safe to call from a multithreaded parent (no copy-on-write duplicate of the parent's address space for a stray allocator lock to be held against). ([#21](https://github.com/baileyrd/rusty_libc/issues/21), [PR #58](https://github.com/baileyrd/rusty_libc/pull/58))
+
+**Notes from this batch worth keeping in mind**
+- `vfork_exec` needed real hand-written asm (`arch::vfork_execve`, one implementation per architecture), not ordinary Rust code after the `clone` syscall. `CLONE_VM` gives the child *actual* shared memory with the parent, not fork's copy-on-write duplicate, so the compiler's usual (and normally correct) freedom to reuse a stack slot between "this local is only live in the child branch" and "this local is only live in the parent's continuation" becomes unsound: both branches really do run, sequentially, against the same physical memory. Caught this locally in two stages — a shared-stack version corrupted the parent's own `pid` variable, and a version with a separate child stack then SIGSEGV'd, because raw `clone()` has no notion of giving the child a fresh call frame, only of resuming both parent and child from the same mid-flight point. The shipped fix does the entire clone-then-`execve` sequence as one asm block per arch, so the child never executes a single instruction of compiler-generated code.
+- The `clone3` syscall (used by `fork_with_pidfd`) is unavailable in this crate's own dev sandbox — denied outright via what looks like a seccomp filter, to the point that even the Rust test runner's own thread-spawn `clone3` call fails the same way. `fork_with_pidfd`'s test tolerates this (skips rather than fails) since it can't be told apart locally from a real regression, but the real target CI (`ubuntu-latest`, unrestricted) exercises the full success path — confirmed green there.
+
+---
+
 ## Round 3, batch 3: uname, readv/writev, rusage, and a test-race fix — [PR #51](https://github.com/baileyrd/rusty_libc/pull/51)–[#54](https://github.com/baileyrd/rusty_libc/pull/54)
 
 **July 23, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/d6e4c83...946ad5c)**
@@ -26,6 +43,26 @@ Stay up to date with the latest changes to rusty_libc.
 **Notes from this batch worth keeping in mind**
 - `waitid`'s rusage out-parameter reads back all-zero under the aarch64 qemu-user CI job even when the sibling `wait4`-based path (identical CPU-burning test child) reports real data on both arches — a gap in qemu-user's syscall translation for `waitid` specifically, not a crate bug or a real aarch64 kernel limitation. The content assertion in `waitid_rusage`'s test is x86_64-only for this reason (same reasoning already applied to `vdso_resolves_on_native_x86_64`).
 - Clippy is genuinely per-target when code is `cfg`-gated by arch: PR #54 shipped a local-clean commit that CI caught as an aarch64-only "unused variable" (a variable read only inside an `x86_64`-gated assertion). Fixed immediately, and `cargo clippy --target aarch64-unknown-linux-gnu --all-targets -- -D warnings` is now run explicitly alongside the default-target check for every change in this round, not just when `cfg`-gating is visibly in play.
+
+---
+
+## Round 3, batch 2: utimensat, linkat, getgroups, priority control, pdeathsig — [PR #45](https://github.com/baileyrd/rusty_libc/pull/45)–[#49](https://github.com/baileyrd/rusty_libc/pull/49)
+
+**July 22, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/f566d12...d6e4c83)**
+
+Continuing straight through REVIEW.md's Round 3 list.
+
+**Added**
+- `fs::utimensat`/`utimens` + `UTIME_NOW`/`UTIME_OMIT` — set atime/mtime; nothing existed to back `touch`. ([#24](https://github.com/baileyrd/rusty_libc/issues/24), [PR #45](https://github.com/baileyrd/rusty_libc/pull/45))
+- `fs::linkat`/`link` + `AT_SYMLINK_FOLLOW` — hard links; `fs` covered `symlinkat` but not `ln` (without `-s`). ([#25](https://github.com/baileyrd/rusty_libc/issues/25), [PR #46](https://github.com/baileyrd/rusty_libc/pull/46))
+- `process::ngroups`/`getgroups` — supplementary group IDs for `id`/`groups`-style builtins. ([#27](https://github.com/baileyrd/rusty_libc/issues/27), [PR #47](https://github.com/baileyrd/rusty_libc/pull/47))
+- `process::getpriority`/`setpriority`/`nice` — no priority control existed at all. ([#28](https://github.com/baileyrd/rusty_libc/issues/28), [PR #48](https://github.com/baileyrd/rusty_libc/pull/48))
+- `process::prctl`/`set_pdeathsig`/`get_pdeathsig` — the standard fix for orphaned children surviving a crashed/killed job-control shell. ([#29](https://github.com/baileyrd/rusty_libc/issues/29), [PR #49](https://github.com/baileyrd/rusty_libc/pull/49))
+
+**Fixed**
+- The priority-control PR's own test assumed the crate's test suite always runs as root (true in this repo's dev sandbox, not guaranteed for a consumer's CI): restoring a raised nice value back down needs `CAP_SYS_NICE`, which an unprivileged runner doesn't have. GitHub's own hosted CI runner caught it immediately after merge. Fixed by isolating the whole scenario in a forked child that just exits — carrying the mutation away with it — instead of requiring a privileged restore step. Verified this round and going forward by actually running the test binaries as an unprivileged user (`setpriv --reuid=nobody`) locally, on both arches, not just re-reading the code.
+
+Every syscall number and constant in this batch was checked directly against `/usr/include/{x86_64-linux-gnu/asm,asm-generic}/unistd.h` and `linux/prctl.h` before use, including one genuinely arch-order-swapped pair (`GETPRIORITY`/`SETPRIORITY` are `140`/`141` on x86_64 but `141`/`140` on aarch64) that a memory-only recall would have been an even-odds coin flip on.
 
 ---
 

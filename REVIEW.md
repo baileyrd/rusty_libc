@@ -321,6 +321,15 @@ ordered roughly by impact.
 
 ## L. Event-driven signals — a design question, not a gap
 
+> **Status:** decided. See
+> [ADR-0002](docs/adr/0002-signalfd-as-primary-event-driven-signal-path.md):
+> `signalfd` is the primary recommended path for the asynchronous signals a
+> job-control shell reacts to (`SIGCHLD`/`SIGINT`/`SIGWINCH`/`SIGTERM`/`SIGHUP`
+> and `trap`-style user handlers), with `sigaction` kept for synchronous
+> hardware-fault signals and handler-based compatibility. Implementation
+> tracked separately (not part of this decision — see the ADR's
+> "Consequences").
+
 Not a missing primitive, a flag for a decision: the signal story (`sigaction`,
 `sigprocmask`, `sigsuspend`) is complete and correct, but it's also the most
 failure-prone part of anything built on it — signal-safety rules, the
