@@ -36,6 +36,7 @@ pub mod fs;
 pub mod inotify;
 pub mod mmap;
 pub mod process;
+pub mod ptrace;
 pub mod rand;
 pub mod rlimit;
 pub mod signal;
