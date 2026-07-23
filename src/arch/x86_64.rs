@@ -124,6 +124,9 @@ pub mod nr {
     pub const EPOLL_CREATE1: usize = 291;
     pub const EPOLL_CTL: usize = 233;
     pub const EPOLL_WAIT: usize = 232;
+    pub const INOTIFY_INIT1: usize = 294;
+    pub const INOTIFY_ADD_WATCH: usize = 254;
+    pub const INOTIFY_RM_WATCH: usize = 255;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.

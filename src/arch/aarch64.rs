@@ -127,6 +127,9 @@ pub mod nr {
     pub const EPOLL_CREATE1: usize = 20;
     pub const EPOLL_CTL: usize = 21;
     pub const EPOLL_PWAIT: usize = 22;
+    pub const INOTIFY_INIT1: usize = 26;
+    pub const INOTIFY_ADD_WATCH: usize = 27;
+    pub const INOTIFY_RM_WATCH: usize = 28;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.

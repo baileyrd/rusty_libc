@@ -33,6 +33,7 @@ pub mod epoll;
 pub mod eventfd;
 pub mod fd;
 pub mod fs;
+pub mod inotify;
 pub mod mmap;
 pub mod process;
 pub mod rand;
