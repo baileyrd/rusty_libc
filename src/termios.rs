@@ -20,9 +20,12 @@ const TCSETS: usize = 0x5402; // TCSANOW: set immediately.
 const TCSETSW: usize = 0x5403; // TCSADRAIN: drain output, then set.
 const TCSETSF: usize = 0x5404; // TCSAFLUSH: drain output, flush input, then set.
 const TCSBRK: usize = 0x5409; // with arg != 0, wait for output to drain (tcdrain).
+const TCXONC: usize = 0x540a; // suspend/resume output or input (tcflow).
 const TCFLSH: usize = 0x540b; // flush input and/or output queues (tcflush).
 const TIOCGPGRP: usize = 0x540f;
 const TIOCSPGRP: usize = 0x5410;
+const TCSBRKP: usize = 0x5425; // POSIX tcsendbreak, distinct from plain TCSBRK.
+const TIOCGSID: usize = 0x5429;
 
 /// [`tcsetattr_with`] action: apply the change immediately.
 pub const TCSANOW: i32 = 0;
@@ -39,6 +42,17 @@ pub const TCIFLUSH: i32 = 0;
 pub const TCOFLUSH: i32 = 1;
 /// [`tcflush`] queue selector: discard both input and output.
 pub const TCIOFLUSH: i32 = 2;
+
+/// [`tcflow`] action: suspend output.
+pub const TCOOFF: i32 = 0;
+/// [`tcflow`] action: resume suspended output.
+pub const TCOON: i32 = 1;
+/// [`tcflow`] action: transmit a STOP character, intended to suspend the
+/// terminal's own output back to us.
+pub const TCIOFF: i32 = 2;
+/// [`tcflow`] action: transmit a START character, intended to resume the
+/// terminal's own output back to us.
+pub const TCION: i32 = 3;
 
 // Input flags (`c_iflag`).
 /// Ignore BREAK conditions on input.
@@ -244,6 +258,43 @@ pub fn tcsetpgrp(fd: i32, pgrp: i32) -> Result<(), Errno> {
     Ok(())
 }
 
+/// Suspend or resume transmission/reception on terminal `fd` (`action` is
+/// one of [`TCOOFF`]/[`TCOON`]/[`TCIOFF`]/[`TCION`]).
+pub fn tcflow(fd: i32, action: i32) -> Result<(), Errno> {
+    // TCXONC takes the action as an integer arg, not a pointer.
+    // SAFETY: integer request; no memory is dereferenced.
+    unsafe { ioctl(fd, TCXONC, action as usize) }?;
+    Ok(())
+}
+
+/// Transmit a break condition on terminal `fd`. `duration == 0` sends a
+/// break of the kernel's own default length (0.25-0.5s per POSIX); a
+/// nonzero `duration` is interpreted by the kernel driver in
+/// implementation-defined units (roughly hundreds of milliseconds on
+/// Linux's serial drivers) -- there is no portable way to request an exact
+/// duration, only "the default" vs. "some other, driver-defined length".
+///
+/// Uses `TCSBRKP`, the ioctl the kernel added specifically to back this
+/// function (see `TCSBRKP`'s own kernel comment), distinct from the plain
+/// `TCSBRK` [`tcdrain`] uses -- unlike `TCSBRK`, `TCSBRKP` sends a break for
+/// *any* argument value, including nonzero ones, rather than treating a
+/// nonzero argument as "just drain, no break".
+pub fn tcsendbreak(fd: i32, duration: i32) -> Result<(), Errno> {
+    // SAFETY: integer request; no memory is dereferenced.
+    unsafe { ioctl(fd, TCSBRKP, duration as usize) }?;
+    Ok(())
+}
+
+/// Get the session ID of the session terminal `fd` is the controlling
+/// terminal for (the process group leader's pid at the time the session was
+/// created, per POSIX `tcgetsid`).
+pub fn tcgetsid(fd: i32) -> Result<i32, Errno> {
+    let mut sid: i32 = 0;
+    // SAFETY: `TIOCGSID` expects a `*mut pid_t`.
+    unsafe { ioctl(fd, TIOCGSID, &mut sid as *mut i32 as usize) }?;
+    Ok(sid)
+}
+
 /// Return `true` if `fd` refers to a terminal (a successful `TCGETS`).
 #[inline]
 pub fn isatty(fd: i32) -> bool {
@@ -406,5 +457,65 @@ mod tests {
         if tcsetpgrp(sfd, pgrp).is_ok() {
             assert_eq!(tcgetpgrp(sfd).expect("tcgetpgrp"), pgrp);
         }
+    }
+
+    #[test]
+    fn tcflow_suspend_and_resume_on_pty() {
+        use std::os::fd::AsRawFd;
+        let (_m, s) = open_pty();
+        let sfd = s.as_raw_fd();
+        // Suspend then resume output; both are valid on a pty slave.
+        tcflow(sfd, TCOOFF).expect("tcflow TCOOFF");
+        tcflow(sfd, TCOON).expect("tcflow TCOON");
+        // Same for the input direction.
+        tcflow(sfd, TCIOFF).expect("tcflow TCIOFF");
+        tcflow(sfd, TCION).expect("tcflow TCION");
+    }
+
+    #[test]
+    fn tcflow_on_a_pipe_is_enotty() {
+        let (r, w) = crate::fd::pipe2(0).unwrap();
+        assert_eq!(tcflow(r, TCOOFF), Err(Errno(25))); // ENOTTY
+        crate::fd::close(r).unwrap();
+        crate::fd::close(w).unwrap();
+    }
+
+    #[test]
+    fn tcsendbreak_on_pty() {
+        use std::os::fd::AsRawFd;
+        let (_m, s) = open_pty();
+        let sfd = s.as_raw_fd();
+        // Default-length break, and an explicit nonzero duration.
+        tcsendbreak(sfd, 0).expect("tcsendbreak default");
+        tcsendbreak(sfd, 1).expect("tcsendbreak explicit duration");
+    }
+
+    #[test]
+    fn tcsendbreak_on_a_pipe_is_enotty() {
+        let (r, w) = crate::fd::pipe2(0).unwrap();
+        assert_eq!(tcsendbreak(r, 0), Err(Errno(25))); // ENOTTY
+        crate::fd::close(r).unwrap();
+        crate::fd::close(w).unwrap();
+    }
+
+    #[test]
+    fn tcgetsid_on_pty() {
+        use std::os::fd::AsRawFd;
+        let (_m, s) = open_pty();
+        let sfd = s.as_raw_fd();
+        // Without a controlling terminal the kernel may reject this
+        // (ENOTTY); that is a valid, non-panicking outcome here too (see
+        // tcsetpgrp_tcgetpgrp_roundtrip_on_pty above for the same caveat).
+        if let Ok(sid) = tcgetsid(sfd) {
+            assert!(sid > 0);
+        }
+    }
+
+    #[test]
+    fn tcgetsid_on_a_pipe_is_enotty() {
+        let (r, w) = crate::fd::pipe2(0).unwrap();
+        assert_eq!(tcgetsid(r), Err(Errno(25))); // ENOTTY
+        crate::fd::close(r).unwrap();
+        crate::fd::close(w).unwrap();
     }
 }
