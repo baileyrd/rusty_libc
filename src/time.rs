@@ -102,6 +102,54 @@ pub fn nanosleep(req: &Timespec, rem: Option<&mut Timespec>) -> Result<(), Errno
     from_ret(ret).map(|_| ())
 }
 
+/// [`clock_nanosleep`] `flags`: interpret `req` as an absolute deadline on
+/// `clockid` rather than an interval relative to now.
+pub const TIMER_ABSTIME: i32 = 1;
+
+/// Suspend execution until `req` elapses, on the clock named by `clockid`
+/// (typically [`CLOCK_MONOTONIC`] or [`CLOCK_REALTIME`]) — unlike
+/// [`nanosleep`], which always sleeps relative to an unspecified,
+/// roughly-monotonic clock with no way to name it or target an absolute
+/// deadline.
+///
+/// With [`TIMER_ABSTIME`], `req` is the absolute time to wake at rather
+/// than a relative duration, giving a drift-free periodic sleep: compute
+/// each deadline as `last_deadline + period` up front, rather than
+/// `now + period` after each wake (which accumulates the scheduling
+/// latency of every previous iteration). The same reasoning that makes
+/// [`crate::time::timerfd_create`] preferable to `SIGALRM` for a repeating
+/// timeout applies here to a thread that wants to block for it directly.
+///
+/// If a signal interrupts the sleep, this returns `Err(EINTR)`; when
+/// `rem` is `Some` and `flags` does *not* include [`TIMER_ABSTIME`], the
+/// time left unslept is written there so the caller can resume (as with
+/// `nanosleep`) — the kernel never touches `rem` for an absolute sleep,
+/// since "time remaining" isn't a meaningful concept for a fixed deadline.
+pub fn clock_nanosleep(
+    clockid: i32,
+    flags: i32,
+    req: &Timespec,
+    rem: Option<&mut Timespec>,
+) -> Result<(), Errno> {
+    let rem_ptr = match rem {
+        Some(r) => r as *mut Timespec as usize,
+        None => 0,
+    };
+    // clock_nanosleep(clockid, flags, req, rem).
+    // SAFETY: `req` is a valid `*const timespec` the kernel reads; `rem` is
+    // null or a valid `*mut timespec` the kernel may write on EINTR.
+    let ret = unsafe {
+        syscall4(
+            nr::CLOCK_NANOSLEEP,
+            clockid as usize,
+            flags as usize,
+            req as *const Timespec as usize,
+            rem_ptr,
+        )
+    };
+    from_ret(ret).map(|_| ())
+}
+
 // --- timerfd_create(2) / timerfd_settime(2) / timerfd_gettime(2) --------
 
 /// `timerfd_create(2)`/`timerfd_settime(2)` flag: return/set a non-blocking
@@ -356,5 +404,48 @@ mod tests {
     #[test]
     fn timerfd_create_bad_clockid_is_einval() {
         assert_eq!(timerfd_create(9999, 0), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn clock_nanosleep_relative_sleeps_at_least_the_requested_duration() {
+        let start = clock_gettime(CLOCK_MONOTONIC).expect("clock_gettime");
+        let req = Timespec::from_millis(20);
+        clock_nanosleep(CLOCK_MONOTONIC, 0, &req, None).expect("clock_nanosleep");
+        let end = clock_gettime(CLOCK_MONOTONIC).expect("clock_gettime");
+
+        let elapsed_ms =
+            (end.tv_sec - start.tv_sec) * 1000 + (end.tv_nsec - start.tv_nsec) / 1_000_000;
+        assert!(elapsed_ms >= 20, "slept only {elapsed_ms}ms, wanted >= 20");
+    }
+
+    #[test]
+    fn clock_nanosleep_abstime_sleeps_until_the_deadline() {
+        let now = clock_gettime(CLOCK_MONOTONIC).expect("clock_gettime");
+        // now + 20ms, on the same (arbitrary-epoch) monotonic timeline
+        // `now` itself came from -- absolute deadlines only make sense
+        // relative to a clock reading already on that timeline.
+        let mut deadline_nsec = now.tv_nsec + 20_000_000;
+        let deadline = Timespec {
+            tv_sec: now.tv_sec + deadline_nsec / 1_000_000_000,
+            tv_nsec: {
+                deadline_nsec %= 1_000_000_000;
+                deadline_nsec
+            },
+        };
+
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &deadline, None)
+            .expect("clock_nanosleep abstime");
+
+        let end = clock_gettime(CLOCK_MONOTONIC).expect("clock_gettime");
+        assert!(
+            (end.tv_sec, end.tv_nsec) >= (deadline.tv_sec, deadline.tv_nsec),
+            "woke at {end:?}, before the deadline {deadline:?}"
+        );
+    }
+
+    #[test]
+    fn clock_nanosleep_bad_clockid_is_einval() {
+        let req = Timespec::default();
+        assert_eq!(clock_nanosleep(9999, 0, &req, None), Err(Errno::EINVAL));
     }
 }

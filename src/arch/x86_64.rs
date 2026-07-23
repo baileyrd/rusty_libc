@@ -27,6 +27,7 @@ pub mod nr {
     pub const WRITEV: usize = 20;
     pub const FTRUNCATE: usize = 77;
     pub const NANOSLEEP: usize = 35;
+    pub const CLOCK_NANOSLEEP: usize = 230;
     pub const DUP: usize = 32;
     pub const DUP2: usize = 33;
     pub const GETPID: usize = 39;
