@@ -31,6 +31,7 @@ pub mod arch;
 pub mod fd;
 pub mod fs;
 pub mod process;
+pub mod rand;
 pub mod rlimit;
 pub mod signal;
 pub mod termios;
