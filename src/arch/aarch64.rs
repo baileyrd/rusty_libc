@@ -110,6 +110,8 @@ pub mod nr {
     pub const TRUNCATE: usize = 45;
     pub const GETTID: usize = 178;
     pub const CLOSE_RANGE: usize = 436;
+    pub const FSYNC: usize = 82;
+    pub const FDATASYNC: usize = 83;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.

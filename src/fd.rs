@@ -478,6 +478,24 @@ pub fn close_range(first: u32, last: u32, flags: u32) -> Result<(), Errno> {
 /// it.
 pub const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;
 
+/// Flush `fd`'s data **and** metadata (size, timestamps, ...) to the
+/// underlying storage, blocking until the device reports the write complete.
+pub fn fsync(fd: i32) -> Result<(), Errno> {
+    // SAFETY: plain integer argument.
+    let ret = unsafe { syscall1(nr::FSYNC, fd as usize) };
+    from_ret(ret).map(|_| ())
+}
+
+/// Flush `fd`'s data to the underlying storage, like [`fsync`], but skips
+/// metadata that isn't needed to retrieve the data on a subsequent read
+/// (e.g. an up-to-date modification time) -- typically cheaper than `fsync`
+/// when that distinction doesn't matter to the caller.
+pub fn fdatasync(fd: i32) -> Result<(), Errno> {
+    // SAFETY: plain integer argument.
+    let ret = unsafe { syscall1(nr::FDATASYNC, fd as usize) };
+    from_ret(ret).map(|_| ())
+}
+
 /// Perform an `fcntl(2)` operation with an integer argument. Covers the
 /// descriptor-flag commands ([`F_GETFD`]/[`F_SETFD`] with [`FD_CLOEXEC`]), the
 /// status-flag commands ([`F_GETFL`]/[`F_SETFL`] with [`O_NONBLOCK`]), and
@@ -910,5 +928,22 @@ mod tests {
     #[test]
     fn ftruncate_bad_fd_is_ebadf() {
         assert_eq!(ftruncate(-1, 0), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn fsync_and_fdatasync_succeed_on_a_written_fd() {
+        let fd = memfd_create(c"rusty_libc_fsync", MFD_CLOEXEC).expect("memfd_create");
+        write_all(fd, b"hello world").expect("write_all");
+
+        fsync(fd).expect("fsync");
+        fdatasync(fd).expect("fdatasync");
+
+        close(fd).expect("close");
+    }
+
+    #[test]
+    fn fsync_and_fdatasync_bad_fd_is_ebadf() {
+        assert_eq!(fsync(-1), Err(Errno::EBADF));
+        assert_eq!(fdatasync(-1), Err(Errno::EBADF));
     }
 }

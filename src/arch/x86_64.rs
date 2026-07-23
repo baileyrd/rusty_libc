@@ -107,6 +107,8 @@ pub mod nr {
     pub const TRUNCATE: usize = 76;
     pub const GETTID: usize = 186;
     pub const CLOSE_RANGE: usize = 436;
+    pub const FSYNC: usize = 74;
+    pub const FDATASYNC: usize = 75;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.
