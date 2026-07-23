@@ -85,6 +85,7 @@ pub mod nr {
     pub const GETDENTS64: usize = 61;
     pub const PIDFD_OPEN: usize = 434;
     pub const CLONE3: usize = 435;
+    pub const PIDFD_SEND_SIGNAL: usize = 424;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.
