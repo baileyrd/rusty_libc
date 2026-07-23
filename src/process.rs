@@ -109,6 +109,47 @@ pub fn setgid(gid: u32) -> Result<(), Errno> {
     from_ret(ret).map(|_| ())
 }
 
+/// Get the calling process's real, effective, and saved user ids in one
+/// call, as `(ruid, euid, suid)`. The getter half of [`setresuid`] --
+/// [`getuid`]/[`geteuid`] only expose two of the three; the saved id has no
+/// dedicated getter of its own on Linux.
+pub fn getresuid() -> Result<(u32, u32, u32), Errno> {
+    let (mut ruid, mut euid, mut suid) = (0u32, 0u32, 0u32);
+    // getresuid(&mut ruid, &mut euid, &mut suid).
+    // SAFETY: all three out-params are valid, exclusively-borrowed `u32`s
+    // the kernel writes.
+    let ret = unsafe {
+        syscall3(
+            nr::GETRESUID,
+            &mut ruid as *mut u32 as usize,
+            &mut euid as *mut u32 as usize,
+            &mut suid as *mut u32 as usize,
+        )
+    };
+    from_ret(ret)?;
+    Ok((ruid, euid, suid))
+}
+
+/// Get the calling process's real, effective, and saved group ids in one
+/// call, as `(rgid, egid, sgid)`. The getter half of [`setresgid`], mirroring
+/// [`getresuid`].
+pub fn getresgid() -> Result<(u32, u32, u32), Errno> {
+    let (mut rgid, mut egid, mut sgid) = (0u32, 0u32, 0u32);
+    // getresgid(&mut rgid, &mut egid, &mut sgid).
+    // SAFETY: all three out-params are valid, exclusively-borrowed `u32`s
+    // the kernel writes.
+    let ret = unsafe {
+        syscall3(
+            nr::GETRESGID,
+            &mut rgid as *mut u32 as usize,
+            &mut egid as *mut u32 as usize,
+            &mut sgid as *mut u32 as usize,
+        )
+    };
+    from_ret(ret)?;
+    Ok((rgid, egid, sgid))
+}
+
 /// Independently set the real, effective, and saved user ids; pass
 /// [`KEEP_ID`] for any of the three to leave it unchanged. The general
 /// primitive [`setuid`]/[`seteuid`] are convenience shorthands over —
@@ -872,6 +913,22 @@ mod tests {
         assert_eq!(geteuid(), getuid());
         assert_eq!(getegid(), getgid());
         assert_eq!(getuid(), getuid());
+    }
+
+    #[test]
+    fn getresuid_getresgid_agree_with_the_two_id_getters() {
+        // Not setuid/setgid, so real == effective == saved for both; cross-
+        // check against the already-established getuid/geteuid getters
+        // rather than just asserting internal self-consistency.
+        let (ruid, euid, suid) = getresuid().expect("getresuid");
+        assert_eq!(ruid, getuid());
+        assert_eq!(euid, geteuid());
+        assert_eq!(suid, getuid());
+
+        let (rgid, egid, sgid) = getresgid().expect("getresgid");
+        assert_eq!(rgid, getgid());
+        assert_eq!(egid, getegid());
+        assert_eq!(sgid, getgid());
     }
 
     #[test]
