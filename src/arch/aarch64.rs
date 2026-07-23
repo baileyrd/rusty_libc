@@ -109,6 +109,7 @@ pub mod nr {
     pub const ACCEPT4: usize = 242;
     pub const TRUNCATE: usize = 45;
     pub const GETTID: usize = 178;
+    pub const CLOSE_RANGE: usize = 436;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.
