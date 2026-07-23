@@ -42,6 +42,7 @@ pub mod nr {
     pub const PPOLL: usize = 73;
     pub const EXIT_GROUP: usize = 94;
     pub const NANOSLEEP: usize = 101;
+    pub const CLOCK_NANOSLEEP: usize = 115;
     pub const CLOCK_GETTIME: usize = 113;
     pub const TIMERFD_CREATE: usize = 85;
     pub const TIMERFD_SETTIME: usize = 86;
