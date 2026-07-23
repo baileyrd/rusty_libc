@@ -96,13 +96,10 @@ here" bugs disappears for the signal set that goes through `signalfd`.
 
 ## Consequences
 
-- `signalfd(2)`/`signalfd4(2)` is not yet implemented in this crate — this
-  ADR is the decision to build it as the recommended path, not the
-  implementation itself (issue #33 is explicitly a design question, not an
-  implementation task). A follow-up issue tracks adding the actual wrapper
-  (`signalfd`, `SFD_NONBLOCK`/`SFD_CLOEXEC`, the `signalfd_siginfo` struct
-  matching the kernel layout) plus a worked example composing it with
-  `fd::poll` the way a `rush`-style job-control loop would.
+- `signalfd(2)`/`signalfd4(2)` is implemented (`signal::signalfd`,
+  `SFD_NONBLOCK`/`SFD_CLOEXEC`, `SignalfdSiginfo` matching the kernel
+  layout), tracked in #59 and shipped separately from this decision, per
+  #33's own scoping.
 - Existing `sigaction`/`sigprocmask`/`sigsuspend` code, tests, and the
   x86_64 restorer machinery are unaffected — nothing is being removed or
   deprecated at the API level, only re-pointed as the *secondary* path for

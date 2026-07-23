@@ -20,7 +20,7 @@
 //! trampoline, so `SA_RESTORER` is neither set nor required there.
 
 use crate::arch::nr;
-use crate::arch::{from_ret, syscall2, syscall4, Errno};
+use crate::arch::{from_ret, from_ret_i32, syscall2, syscall4, Errno};
 
 /// A signal handler: [`SIG_DFL`], [`SIG_IGN`], or a function pointer
 /// (`extern "C" fn(i32)` cast to `usize`). Modelled as `usize` to match
@@ -302,6 +302,116 @@ pub fn sigsuspend(mask: u64) -> Errno {
     }
 }
 
+// --- signalfd(2) -------------------------------------------------------
+
+/// `signalfd(2)` flag: return a non-blocking descriptor.
+pub const SFD_NONBLOCK: i32 = 0o0004000;
+/// `signalfd(2)` flag: set close-on-exec on the returned descriptor.
+pub const SFD_CLOEXEC: i32 = 0o2000000;
+
+/// Per-signal detail delivered by reading a `signalfd` (kernel
+/// `struct signalfd_siginfo`), fixed at 128 bytes on every architecture
+/// (the kernel pads it out deliberately so a `read(2)` never needs a compat
+/// path).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SignalfdSiginfo {
+    /// The signal number ([`SIGCHLD`], [`SIGINT`], ...).
+    pub ssi_signo: u32,
+    /// `errno` associated with this signal, if any (rarely set on Linux).
+    pub ssi_errno: i32,
+    /// Signal code (e.g. `CLD_EXITED` for a `SIGCHLD`; see `<bits/siginfo.h>`
+    /// for the full set, not reproduced by this crate).
+    pub ssi_code: i32,
+    /// Sending process's pid, for signals that carry one (e.g. `SIGCHLD`,
+    /// `kill`-delivered signals).
+    pub ssi_pid: u32,
+    /// Sending process's real uid.
+    pub ssi_uid: u32,
+    /// Source file descriptor, for `SIGIO`/`SIGPOLL`.
+    pub ssi_fd: i32,
+    /// POSIX timer id, for timer-generated signals.
+    pub ssi_tid: u32,
+    /// Band event, for `SIGIO`/`SIGPOLL`.
+    pub ssi_band: u32,
+    /// POSIX timer overrun count.
+    pub ssi_overrun: u32,
+    /// Trap number, for hardware-fault signals.
+    pub ssi_trapno: u32,
+    /// Exit status or signal, for `SIGCHLD`.
+    pub ssi_status: i32,
+    /// Integer value, for `sigqueue`-delivered signals.
+    pub ssi_int: i32,
+    /// Pointer value, for `sigqueue`-delivered signals.
+    pub ssi_ptr: u64,
+    /// User CPU time consumed, for `SIGCHLD` (in clock ticks).
+    pub ssi_utime: u64,
+    /// System CPU time consumed, for `SIGCHLD` (in clock ticks).
+    pub ssi_stime: u64,
+    /// Faulting address, for hardware-fault signals.
+    pub ssi_addr: u64,
+    /// Least significant bit of the faulting address, for some hardware
+    /// faults.
+    pub ssi_addr_lsb: u16,
+    __pad2: u16,
+    /// Triggering system call number, for a seccomp-generated `SIGSYS`.
+    pub ssi_syscall: i32,
+    /// Triggering system call's instruction pointer, for a seccomp-generated
+    /// `SIGSYS`.
+    pub ssi_call_addr: u64,
+    /// Architecture of the triggering system call, for a seccomp-generated
+    /// `SIGSYS`.
+    pub ssi_arch: u32,
+    __pad: [u8; 28],
+}
+
+const _: () = assert!(core::mem::size_of::<SignalfdSiginfo>() == 128);
+const _: () = assert!(core::mem::offset_of!(SignalfdSiginfo, ssi_pid) == 12);
+const _: () = assert!(core::mem::offset_of!(SignalfdSiginfo, ssi_ptr) == 48);
+const _: () = assert!(core::mem::offset_of!(SignalfdSiginfo, ssi_addr_lsb) == 80);
+const _: () = assert!(core::mem::offset_of!(SignalfdSiginfo, ssi_arch) == 96);
+
+/// Create (or, passing an existing signalfd as `fd`, reconfigure) a file
+/// descriptor that becomes readable whenever a signal in `mask` (built from
+/// [`sigmask`], OR several together) is pending for the caller. Pass
+/// `fd = -1` to create a new descriptor; `flags` is an OR of
+/// [`SFD_NONBLOCK`]/[`SFD_CLOEXEC`].
+///
+/// The signals in `mask` must also be blocked via [`sigprocmask`] (typically
+/// just before this call, with the same mask) for delivery to route here
+/// instead of the default disposition or a handler installed via
+/// [`sigaction`]/[`signal`] -- `signalfd` does not itself change the mask.
+///
+/// Reading the returned fd with [`crate::fd::read`] (sized to whole
+/// [`SignalfdSiginfo`] records) atomically dequeues one pending signal per
+/// record and runs no handler at all: everything happens in ordinary
+/// control flow, composing with [`crate::fd::poll`] the same way any other
+/// readiness-based fd does, with none of the async-signal-safety
+/// constraints a real handler imposes on what can run in response. This is
+/// this crate's recommended path for the asynchronous signals a
+/// long-running program (e.g. a job-control shell's `SIGCHLD`/`SIGINT`/
+/// `SIGWINCH` handling, or a `trap`-style dispatcher) needs to react to; see
+/// [ADR-0002](https://github.com/baileyrd/rusty_libc/blob/main/docs/adr/0002-signalfd-as-primary-event-driven-signal-path.md)
+/// for the full reasoning, including where `sigaction` remains the right
+/// tool (synchronous hardware-fault signals like `SIGSEGV`).
+///
+/// The returned fd is closed with [`crate::fd::close`] like any other fd.
+pub fn signalfd(fd: i32, mask: u64, flags: i32) -> Result<i32, Errno> {
+    // signalfd4(fd, &mask, sigsetsize, flags).
+    // SAFETY: `mask` is a valid, exclusively-borrowed 8-byte kernel sigset
+    // the kernel only reads.
+    let ret = unsafe {
+        syscall4(
+            nr::SIGNALFD4,
+            fd as usize,
+            &mask as *const u64 as usize,
+            SIGSETSIZE,
+            flags as usize,
+        )
+    };
+    from_ret_i32(ret)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -434,5 +544,74 @@ mod tests {
         tgkill(pid, tid, SIGUSR1);
         assert_eq!(COUNT.load(Ordering::SeqCst), 1);
         unsafe { signal(SIGUSR1, prev) }.expect("restore SIGUSR1 after sigaction");
+    }
+
+    // signalfd tests use SIGPWR, untouched by every other test in this file
+    // (all of which live on SIGUSR1/SIGUSR2/SIGURG), so they need no
+    // coordination with `delivery_stress_and_restorer_and_ignore`'s shared,
+    // process-wide disposition state.
+
+    #[test]
+    fn signalfd_reports_pending_signal_and_dequeues_it() {
+        use crate::fd;
+
+        let pid = crate::process::getpid();
+        let old_mask = sigprocmask(SIG_BLOCK, sigmask(SIGPWR)).expect("block SIGPWR");
+
+        let sfd = signalfd(-1, sigmask(SIGPWR), 0).expect("signalfd");
+
+        // Not readable before the signal is raised.
+        let mut fds = [fd::PollFd {
+            fd: sfd,
+            events: fd::POLLIN,
+            revents: 0,
+        }];
+        assert_eq!(fd::poll(&mut fds, 0).expect("poll before"), 0);
+
+        // `sigprocmask` blocks per-thread, and `cargo test` runs each test on
+        // its own thread, so a process-wide `kill` here would land on
+        // whichever other thread doesn't have SIGPWR blocked -- its default
+        // disposition is to terminate the process. `tgkill` at this exact
+        // thread (the same pattern the delivery/mask tests above use)
+        // targets only the thread that actually blocked it.
+        tgkill(pid, gettid(), SIGPWR);
+
+        let n = fd::poll(&mut fds, 1000).expect("poll after");
+        assert_eq!(n, 1, "signalfd did not become readable");
+        assert!(fds[0].is_readable());
+
+        let mut info = SignalfdSiginfo::default();
+        // SAFETY: `info` is a valid, exclusively-borrowed, plain-data
+        // `SignalfdSiginfo` of exactly the size the kernel writes.
+        let buf = unsafe {
+            core::slice::from_raw_parts_mut(
+                &mut info as *mut SignalfdSiginfo as *mut u8,
+                core::mem::size_of::<SignalfdSiginfo>(),
+            )
+        };
+        let read_n = fd::read(sfd, buf).expect("read signalfd_siginfo");
+        assert_eq!(read_n, core::mem::size_of::<SignalfdSiginfo>());
+        assert_eq!(info.ssi_signo, SIGPWR as u32);
+        assert_eq!(info.ssi_pid, pid as u32);
+
+        // The read dequeued it: no longer pending.
+        assert_eq!(sigpending().expect("sigpending") & sigmask(SIGPWR), 0);
+
+        fd::close(sfd).expect("close signalfd");
+        sigprocmask(SIG_SETMASK, old_mask).expect("restore mask");
+    }
+
+    #[test]
+    fn signalfd_nonblock_read_is_eagain_when_nothing_pending() {
+        use crate::fd;
+
+        let old_mask = sigprocmask(SIG_BLOCK, sigmask(SIGPWR)).expect("block SIGPWR");
+        let sfd = signalfd(-1, sigmask(SIGPWR), SFD_NONBLOCK).expect("signalfd nonblock");
+
+        let mut buf = [0u8; core::mem::size_of::<SignalfdSiginfo>()];
+        assert_eq!(fd::read(sfd, &mut buf), Err(Errno::EAGAIN));
+
+        fd::close(sfd).expect("close signalfd");
+        sigprocmask(SIG_SETMASK, old_mask).expect("restore mask");
     }
 }
