@@ -19,7 +19,7 @@ assertions), not glibc's.
 | Module | What it provides |
 |---|---|
 | `arch` | `syscall0`..`syscall6`, the `Errno` newtype (named constants, `Display`, `Error`), and `-errno` decoding |
-| `fd` | `read`/`write`(`_all`), `pread`/`pwrite`, `open`/`openat`, `poll`, `pipe2`, `dup`/`dup2`/`dup3`, `close`, `fcntl`, `memfd_create`, `lseek`, `ftruncate`; `O_*`/`F_*`/`POLL*` constants |
+| `fd` | `read`/`write`(`_all`), `pread`/`pwrite`, `readv`/`writev` (`IoSlice`/`IoSliceMut`), `open`/`openat`, `poll`, `pipe2`, `dup`/`dup2`/`dup3`, `close`, `fcntl`, `memfd_create`, `lseek`, `ftruncate`; `O_*`/`F_*`/`POLL*` constants |
 | `fs` | `statx`/`stat`/`lstat`/`fstat`, `faccessat`/`access`, `unlinkat`/`mkdirat`/`renameat2`/`symlinkat`/`readlinkat`/`linkat` (+ `unlink`/`mkdir`/`rename`/`link`/… shorthands), `fchmodat`/`chmod`, `fchownat`/`chown`/`lchown`, `utimensat`/`utimens` |
 | `process` | pids/uids/gids (real & effective), `ngroups`/`getgroups`, `getpriority`/`setpriority`/`nice`, `prctl`/`set_pdeathsig`/`get_pdeathsig`, `uname`, `setpgid`/`setsid`/`getpgid`/`getsid`/`getpgrp`, `kill`/`killpg`, `chdir`/`fchdir`/`getcwd`, `exit_group`, raw `fork`, `execve`/`execveat`, `CStrArray` (`std` feature) |
 | `signal` | `signal`/`sigaction` (+ `SA_*`), `sigprocmask`/`sigpending`/`sigsuspend`, the x86_64 `SA_RESTORER` trampoline, `SIG*` constants |

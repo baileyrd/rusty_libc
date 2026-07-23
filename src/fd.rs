@@ -245,6 +245,84 @@ pub fn pwrite(fd: i32, buf: &[u8], offset: i64) -> Result<usize, Errno> {
     from_ret(ret)
 }
 
+/// A single scatter/gather buffer for [`writev`] (kernel `struct iovec`,
+/// read-only view). `#[repr(C)]` and field order match the kernel's
+/// `{ iov_base, iov_len }` layout exactly, so a slice of these is exactly
+/// what the syscall expects for its iovec array.
+#[repr(C)]
+pub struct IoSlice<'a> {
+    base: *const u8,
+    len: usize,
+    _marker: core::marker::PhantomData<&'a [u8]>,
+}
+
+const _: () = assert!(core::mem::size_of::<IoSlice<'static>>() == 16);
+const _: () = assert!(core::mem::offset_of!(IoSlice<'static>, base) == 0);
+const _: () = assert!(core::mem::offset_of!(IoSlice<'static>, len) == 8);
+
+impl<'a> IoSlice<'a> {
+    /// Wrap `buf` as one `writev` segment.
+    #[inline]
+    pub fn new(buf: &'a [u8]) -> Self {
+        IoSlice {
+            base: buf.as_ptr(),
+            len: buf.len(),
+            _marker: core::marker::PhantomData,
+        }
+    }
+}
+
+/// A single scatter/gather buffer for [`readv`] (kernel `struct iovec`,
+/// mutable view). Same layout as [`IoSlice`]; kept as a distinct type so the
+/// borrow it carries is exclusive, matching what `readv` actually does to it.
+#[repr(C)]
+pub struct IoSliceMut<'a> {
+    base: *mut u8,
+    len: usize,
+    _marker: core::marker::PhantomData<&'a mut [u8]>,
+}
+
+const _: () = assert!(core::mem::size_of::<IoSliceMut<'static>>() == 16);
+const _: () = assert!(core::mem::offset_of!(IoSliceMut<'static>, base) == 0);
+const _: () = assert!(core::mem::offset_of!(IoSliceMut<'static>, len) == 8);
+
+impl<'a> IoSliceMut<'a> {
+    /// Wrap `buf` as one `readv` segment.
+    #[inline]
+    pub fn new(buf: &'a mut [u8]) -> Self {
+        IoSliceMut {
+            base: buf.as_mut_ptr(),
+            len: buf.len(),
+            _marker: core::marker::PhantomData,
+        }
+    }
+}
+
+/// Scatter-read from `fd` into `bufs` in order, filling each segment before
+/// moving to the next. Returns the total byte count (0 at end-of-file).
+///
+/// Equivalent to concatenating `bufs` into one buffer and calling [`read()`],
+/// but without the concatenation: the kernel fills each segment directly.
+pub fn readv(fd: i32, bufs: &mut [IoSliceMut]) -> Result<usize, Errno> {
+    // SAFETY: `bufs` is a valid slice of `struct iovec`-layout entries, each
+    // exclusively borrowing the buffer it points at; the kernel writes at
+    // most `len` bytes into each in order.
+    let ret = unsafe { syscall3(nr::READV, fd as usize, bufs.as_ptr() as usize, bufs.len()) };
+    from_ret(ret)
+}
+
+/// Gather-write `bufs` to `fd` in order. Returns the total byte count
+/// actually written (may be short, the same as [`write()`]).
+///
+/// Equivalent to concatenating `bufs` into one buffer and calling [`write()`],
+/// but without the concatenation: the kernel reads each segment directly.
+pub fn writev(fd: i32, bufs: &[IoSlice]) -> Result<usize, Errno> {
+    // SAFETY: `bufs` is a valid slice of `struct iovec`-layout entries, each
+    // borrowing a buffer the kernel only reads.
+    let ret = unsafe { syscall3(nr::WRITEV, fd as usize, bufs.as_ptr() as usize, bufs.len()) };
+    from_ret(ret)
+}
+
 /// Read into `buf` until it is full or end-of-file, looping over short reads
 /// and retrying on `EINTR`. Returns the number of bytes read, which is less
 /// than `buf.len()` only when EOF was reached first.
@@ -657,6 +735,54 @@ mod tests {
         assert_eq!(&all[..n], b"hello WORLD");
 
         close(fd).expect("close");
+    }
+
+    #[test]
+    fn writev_gathers_segments_in_order() {
+        let (r, w) = pipe2(0).expect("pipe2");
+
+        let a = b"hello ";
+        let b = b"scatter";
+        let c = b"-gather";
+        let bufs = [IoSlice::new(a), IoSlice::new(b), IoSlice::new(c)];
+        let n = writev(w, &bufs).expect("writev");
+        assert_eq!(n, a.len() + b.len() + c.len());
+        close(w).expect("close w");
+
+        let mut all = [0u8; 32];
+        let read_n = read_all(r, &mut all).expect("read_all");
+        assert_eq!(&all[..read_n], b"hello scatter-gather");
+        close(r).expect("close r");
+    }
+
+    #[test]
+    fn readv_scatters_into_segments_in_order() {
+        let (r, w) = pipe2(0).expect("pipe2");
+        write_all(w, b"hello scatter-gather").expect("write_all");
+        close(w).expect("close w");
+
+        let mut a = [0u8; 6];
+        let mut b = [0u8; 7];
+        let mut c = [0u8; 7];
+        let mut bufs = [
+            IoSliceMut::new(&mut a),
+            IoSliceMut::new(&mut b),
+            IoSliceMut::new(&mut c),
+        ];
+        let n = readv(r, &mut bufs).expect("readv");
+        assert_eq!(n, a.len() + b.len() + c.len());
+        assert_eq!(&a, b"hello ");
+        assert_eq!(&b, b"scatter");
+        assert_eq!(&c, b"-gather");
+
+        close(r).expect("close r");
+    }
+
+    #[test]
+    fn writev_bad_fd_is_ebadf() {
+        let buf = b"x";
+        let bufs = [IoSlice::new(buf)];
+        assert_eq!(writev(-1, &bufs), Err(Errno::EBADF));
     }
 
     #[test]
