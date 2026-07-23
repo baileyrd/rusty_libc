@@ -383,7 +383,8 @@ decision, not proposing to silently add.
 > primitives a shell plausibly wants next, not fixes for something broken
 > today. Ordered roughly by how directly each follows from work already
 > shipped. All nine items (40–48) shipped in PRs #73–#81; the sockets design
-> question is decided in [ADR-0003](docs/adr/0003-sockets-out-of-scope-until-a-consumer-need-exists.md).
+> question is decided in [ADR-0003](docs/adr/0003-add-sockets-tcp-udp-and-dns-resolution.md)
+> (add a sockets primitive; implementation tracked separately).
 
 ## M. Completing the pidfd ("Track P") story
 
@@ -495,13 +496,11 @@ decision, not proposing to silently add.
 ## Design question: `/dev/tcp`/`/dev/udp` redirection — sockets, not a gap
 
 > **Status:** decided. See
-> [ADR-0003](docs/adr/0003-sockets-out-of-scope-until-a-consumer-need-exists.md):
-> sockets stay out of scope until a consumer actually wants `/dev/tcp`/
-> `/dev/udp` redirection or another networking-shaped feature — no
-> speculative `socket`/`connect`/resolver surface added now. Unlike Round 3
-> §L/ADR-0002 (a confirmed consumer need, choosing the right primitive for
-> it), there is currently no confirmed need at all, so the decision is to
-> defer, not to implement.
+> [ADR-0003](docs/adr/0003-add-sockets-tcp-udp-and-dns-resolution.md): add a
+> sockets primitive covering TCP, UDP, and DNS-name resolution (`socket`/
+> `dns` modules), scoped to what `/dev/tcp`/`/dev/udp`-style redirection
+> needs, ahead of a confirmed `rush` consumer. Implementation tracked
+> separately (not part of this decision — see the ADR's "Consequences").
 
 Not a missing primitive so much as a scope decision, in the same spirit as
 Round 3 §L: bash and several bash-compatible shells support
