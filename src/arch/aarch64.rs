@@ -131,6 +131,8 @@ pub mod nr {
     pub const INOTIFY_ADD_WATCH: usize = 27;
     pub const INOTIFY_RM_WATCH: usize = 28;
     pub const SYSINFO: usize = 179;
+    pub const PROCESS_VM_READV: usize = 270;
+    pub const PROCESS_VM_WRITEV: usize = 271;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.

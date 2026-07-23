@@ -128,6 +128,8 @@ pub mod nr {
     pub const INOTIFY_ADD_WATCH: usize = 254;
     pub const INOTIFY_RM_WATCH: usize = 255;
     pub const SYSINFO: usize = 99;
+    pub const PROCESS_VM_READV: usize = 310;
+    pub const PROCESS_VM_WRITEV: usize = 311;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.

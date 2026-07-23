@@ -3,8 +3,10 @@
 
 use crate::arch::nr;
 use crate::arch::{
-    from_ret, from_ret_i32, syscall0, syscall1, syscall2, syscall3, syscall4, syscall5, Errno,
+    from_ret, from_ret_i32, syscall0, syscall1, syscall2, syscall3, syscall4, syscall5, syscall6,
+    Errno,
 };
+use crate::fd::{IoSlice, IoSliceMut};
 use core::ffi::{c_char, CStr};
 
 /// Get the calling process's ID. Cannot fail.
@@ -451,6 +453,89 @@ pub fn pidfd_send_signal(pidfd: i32, sig: i32) -> Result<(), Errno> {
     // means "no siginfo payload", matching a plain `kill`.
     let ret = unsafe { syscall4(nr::PIDFD_SEND_SIGNAL, pidfd as usize, sig as usize, 0, 0) };
     from_ret(ret).map(|_| ())
+}
+
+/// One `{ base, len }` range in another process's address space, for
+/// [`process_vm_readv`]/[`process_vm_writev`]. Kernel `struct iovec` layout
+/// (`void *iov_base; size_t iov_len;`), but `base` is a plain [`usize`]
+/// address rather than a pointer: unlike [`crate::fd::IoSlice`], it names a
+/// location in a *different* process's address space, which this process
+/// has no valid reference to and must never dereference.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct RemoteIoVec {
+    base: usize,
+    len: usize,
+}
+
+const _: () = assert!(core::mem::size_of::<RemoteIoVec>() == 16);
+const _: () = assert!(core::mem::offset_of!(RemoteIoVec, base) == 0);
+const _: () = assert!(core::mem::offset_of!(RemoteIoVec, len) == 8);
+
+impl RemoteIoVec {
+    /// Describe `len` bytes starting at address `base` in the target
+    /// process's address space.
+    #[inline]
+    pub fn new(base: usize, len: usize) -> Self {
+        RemoteIoVec { base, len }
+    }
+}
+
+/// Read `pid`'s memory into `local` (this process's buffers), scatter/gather
+/// style, without the target stopped or attached via `ptrace` — a one-shot
+/// snapshot read, not a debugging session. `remote` describes the source
+/// ranges in the target's address space; `local`/`remote` are matched up
+/// positionally but need not have the same segment sizes, only the same
+/// total length. Requires `CAP_SYS_PTRACE` (or the same UID as `pid` with
+/// matching `/proc/sys/kernel/yama/ptrace_scope` permissions). `flags` must
+/// be `0` — the kernel defines no flags for this syscall as of the versions
+/// this crate targets.
+pub fn process_vm_readv(
+    pid: i32,
+    local: &mut [IoSliceMut],
+    remote: &[RemoteIoVec],
+) -> Result<usize, Errno> {
+    // process_vm_readv(pid, lvec, liovcnt, rvec, riovcnt, flags = 0).
+    // SAFETY: `local` exclusively borrows the buffers the kernel writes
+    // into; `remote` only describes (never dereferences on our side) the
+    // target's address ranges to read from.
+    let ret = unsafe {
+        syscall6(
+            nr::PROCESS_VM_READV,
+            pid as usize,
+            local.as_ptr() as usize,
+            local.len(),
+            remote.as_ptr() as usize,
+            remote.len(),
+            0,
+        )
+    };
+    from_ret(ret)
+}
+
+/// Write `local` (this process's buffers) into `pid`'s memory, scatter/gather
+/// style — the write counterpart of [`process_vm_readv`]; same permission
+/// requirements, same positional matching between `local` and `remote`.
+pub fn process_vm_writev(
+    pid: i32,
+    local: &[IoSlice],
+    remote: &[RemoteIoVec],
+) -> Result<usize, Errno> {
+    // process_vm_writev(pid, lvec, liovcnt, rvec, riovcnt, flags = 0).
+    // SAFETY: `local` only borrows buffers the kernel reads from; `remote`
+    // only describes the target's address ranges to write into.
+    let ret = unsafe {
+        syscall6(
+            nr::PROCESS_VM_WRITEV,
+            pid as usize,
+            local.as_ptr() as usize,
+            local.len(),
+            remote.as_ptr() as usize,
+            remote.len(),
+            0,
+        )
+    };
+    from_ret(ret)
 }
 
 /// Terminate all threads in the process with status `status`. Never returns.
@@ -1722,6 +1807,155 @@ mod tests {
 
                 fd::close(r).expect("close r");
             }
+        }
+    }
+
+    #[test]
+    fn process_vm_readv_reads_a_childs_memory() {
+        use crate::{fd, wait};
+
+        // The child parks a known buffer on its stack, reports its address
+        // back over a pipe, then blocks on a second pipe so the buffer stays
+        // alive and at a stable address while the parent reads it out from
+        // the outside -- no ptrace attach, just process_vm_readv against a
+        // running child, matching this crate's own privileged dev sandbox
+        // (root has CAP_SYS_PTRACE over its own children regardless of Yama
+        // ptrace_scope).
+        let (addr_r, addr_w) = fd::pipe2(0).expect("pipe2 addr");
+        let (block_r, block_w) = fd::pipe2(0).expect("pipe2 block");
+
+        match unsafe { fork() }.expect("fork") {
+            0 => {
+                fd::close(addr_r).ok();
+                fd::close(block_w).ok();
+
+                let buf: [u8; 5] = *b"hello";
+                let addr = buf.as_ptr() as usize;
+                fd::write_all(addr_w, &addr.to_ne_bytes()).expect("write addr");
+                fd::close(addr_w).ok();
+
+                // Blocks until the parent closes/writes block_w, keeping
+                // `buf` alive and at this address in the meantime.
+                let mut byte = [0u8; 1];
+                let _ = fd::read(block_r, &mut byte);
+                core::hint::black_box(&buf);
+                exit_group(0);
+            }
+            pid => {
+                fd::close(addr_w).ok();
+                fd::close(block_r).ok();
+
+                let mut addr_bytes = [0u8; core::mem::size_of::<usize>()];
+                fd::read(addr_r, &mut addr_bytes).expect("read addr");
+                fd::close(addr_r).ok();
+                let addr = usize::from_ne_bytes(addr_bytes);
+
+                let mut local = [0u8; 5];
+                match process_vm_readv(
+                    pid,
+                    &mut [IoSliceMut::new(&mut local)],
+                    &[RemoteIoVec::new(addr, 5)],
+                ) {
+                    Ok(n) => {
+                        assert_eq!(n, 5);
+                        assert_eq!(&local, b"hello");
+                    }
+                    // qemu-user's syscall translation layer does not
+                    // implement process_vm_readv (confirmed empirically:
+                    // succeeds natively on x86_64, ENOSYS only under
+                    // aarch64-via-qemu-user) -- a gap in the emulator used
+                    // by this crate's own CI, not real aarch64 hardware
+                    // behavior, so tolerate it here rather than fail an
+                    // emulated run over an untestable environment gap.
+                    Err(Errno::ENOSYS) => {}
+                    Err(e) => panic!("unexpected process_vm_readv error: {e:?}"),
+                }
+
+                fd::close(block_w).ok();
+                let (_, status) = wait::waitpid(pid, 0).expect("waitpid");
+                assert!(wait::wifexited(status));
+            }
+        }
+    }
+
+    #[test]
+    fn process_vm_writev_writes_into_a_childs_memory() {
+        use crate::{fd, wait};
+
+        let (addr_r, addr_w) = fd::pipe2(0).expect("pipe2 addr");
+        let (block_r, block_w) = fd::pipe2(0).expect("pipe2 block");
+        let (result_r, result_w) = fd::pipe2(0).expect("pipe2 result");
+
+        match unsafe { fork() }.expect("fork") {
+            0 => {
+                fd::close(addr_r).ok();
+                fd::close(block_w).ok();
+                fd::close(result_r).ok();
+
+                let mut buf = [0u8; 5];
+                let addr = buf.as_mut_ptr() as usize;
+                fd::write_all(addr_w, &addr.to_ne_bytes()).expect("write addr");
+                fd::close(addr_w).ok();
+
+                // Blocks until the parent's process_vm_writev has landed.
+                let mut byte = [0u8; 1];
+                let _ = fd::read(block_r, &mut byte);
+
+                fd::write_all(result_w, &buf).expect("write result");
+                fd::close(result_w).ok();
+                exit_group(0);
+            }
+            pid => {
+                fd::close(addr_w).ok();
+                fd::close(block_r).ok();
+                fd::close(result_w).ok();
+
+                let mut addr_bytes = [0u8; core::mem::size_of::<usize>()];
+                fd::read(addr_r, &mut addr_bytes).expect("read addr");
+                fd::close(addr_r).ok();
+                let addr = usize::from_ne_bytes(addr_bytes);
+
+                let writev_result =
+                    process_vm_writev(pid, &[IoSlice::new(b"world")], &[RemoteIoVec::new(addr, 5)]);
+
+                fd::close(block_w).ok();
+
+                let mut result = [0u8; 5];
+                fd::read(result_r, &mut result).expect("read result");
+                fd::close(result_r).ok();
+
+                match writev_result {
+                    Ok(n) => {
+                        assert_eq!(n, 5);
+                        assert_eq!(&result, b"world");
+                    }
+                    // See the qemu-user note in
+                    // process_vm_readv_reads_a_childs_memory: the child's
+                    // buffer stays untouched when the syscall itself is
+                    // unimplemented by the emulator.
+                    Err(Errno::ENOSYS) => assert_eq!(result, [0u8; 5]),
+                    Err(e) => panic!("unexpected process_vm_writev error: {e:?}"),
+                }
+
+                let (_, status) = wait::waitpid(pid, 0).expect("waitpid");
+                assert!(wait::wifexited(status));
+            }
+        }
+    }
+
+    #[test]
+    fn process_vm_readv_bad_pid_is_esrch() {
+        let mut local = [0u8; 5];
+        match process_vm_readv(
+            i32::MAX,
+            &mut [IoSliceMut::new(&mut local)],
+            &[RemoteIoVec::new(0x1000, 5)],
+        ) {
+            Err(Errno::ESRCH) => {}
+            // See the qemu-user note in
+            // process_vm_readv_reads_a_childs_memory.
+            Err(Errno::ENOSYS) => {}
+            other => panic!("expected ESRCH (or ENOSYS under qemu-user), got {other:?}"),
         }
     }
 }
