@@ -98,6 +98,15 @@ pub mod nr {
     pub const MUNMAP: usize = 215;
     pub const MMAP: usize = 222;
     pub const MPROTECT: usize = 226;
+    pub const SOCKET: usize = 198;
+    pub const BIND: usize = 200;
+    pub const LISTEN: usize = 201;
+    pub const ACCEPT: usize = 202;
+    pub const CONNECT: usize = 203;
+    pub const SENDTO: usize = 206;
+    pub const RECVFROM: usize = 207;
+    pub const SHUTDOWN: usize = 210;
+    pub const ACCEPT4: usize = 242;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.
