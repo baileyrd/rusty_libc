@@ -106,6 +106,7 @@ pub mod nr {
     pub const ACCEPT4: usize = 288;
     pub const TRUNCATE: usize = 76;
     pub const GETTID: usize = 186;
+    pub const CLOSE_RANGE: usize = 436;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.

@@ -454,6 +454,30 @@ pub fn close(fd: i32) -> Result<(), Errno> {
     from_ret(ret).map(|_| ())
 }
 
+/// Close every fd in `[first, last]` (inclusive) in one syscall, instead of
+/// a manual per-fd loop -- useful for fd cleanup after `fork`/before `exec`
+/// in code paths not already using [`crate::process::vfork_exec_redirected`]'s
+/// explicit redirect list. `flags` is `0` for a normal close, or
+/// [`CLOSE_RANGE_CLOEXEC`] to instead set close-on-exec on the range without
+/// closing anything. Unopened fds in the range are silently skipped, not an
+/// error.
+pub fn close_range(first: u32, last: u32, flags: u32) -> Result<(), Errno> {
+    // SAFETY: plain integer arguments.
+    let ret = unsafe {
+        syscall3(
+            nr::CLOSE_RANGE,
+            first as usize,
+            last as usize,
+            flags as usize,
+        )
+    };
+    from_ret(ret).map(|_| ())
+}
+
+/// [`close_range`] flag: set close-on-exec on the range instead of closing
+/// it.
+pub const CLOSE_RANGE_CLOEXEC: u32 = 1 << 2;
+
 /// Perform an `fcntl(2)` operation with an integer argument. Covers the
 /// descriptor-flag commands ([`F_GETFD`]/[`F_SETFD`] with [`FD_CLOEXEC`]), the
 /// status-flag commands ([`F_GETFL`]/[`F_SETFL`] with [`O_NONBLOCK`]), and
@@ -571,6 +595,57 @@ mod tests {
         assert_eq!(n, 1);
         assert!(fds[0].is_hup());
         close(r).expect("close r");
+    }
+
+    #[test]
+    fn close_range_closes_only_the_given_range() {
+        let (r1, w1) = pipe2(0).expect("pipe2 1");
+        let (r2, w2) = pipe2(0).expect("pipe2 2");
+        let (r3, w3) = pipe2(0).expect("pipe2 3");
+
+        // Three pipes opened back-to-back with nothing else allocating fds
+        // in between yield six consecutive descriptors; close_range the
+        // middle pair only.
+        let (first, last) = (r2.min(w2) as u32, r2.max(w2) as u32);
+        close_range(first, last, 0).expect("close_range");
+
+        assert_eq!(fcntl(r2, F_GETFD, 0), Err(Errno::EBADF));
+        assert_eq!(fcntl(w2, F_GETFD, 0), Err(Errno::EBADF));
+
+        fcntl(r1, F_GETFD, 0).expect("r1 still open");
+        fcntl(w1, F_GETFD, 0).expect("w1 still open");
+        fcntl(r3, F_GETFD, 0).expect("r3 still open");
+        fcntl(w3, F_GETFD, 0).expect("w3 still open");
+
+        close(r1).expect("close r1");
+        close(w1).expect("close w1");
+        close(r3).expect("close r3");
+        close(w3).expect("close w3");
+    }
+
+    #[test]
+    fn close_range_cloexec_sets_flag_without_closing() {
+        let (r, w) = pipe2(0).expect("pipe2");
+        let (first, last) = (r.min(w) as u32, r.max(w) as u32);
+
+        close_range(first, last, CLOSE_RANGE_CLOEXEC).expect("close_range cloexec");
+
+        assert_eq!(
+            fcntl(r, F_GETFD, 0).expect("r still open") & FD_CLOEXEC,
+            FD_CLOEXEC
+        );
+        assert_eq!(
+            fcntl(w, F_GETFD, 0).expect("w still open") & FD_CLOEXEC,
+            FD_CLOEXEC
+        );
+
+        close(r).expect("close r");
+        close(w).expect("close w");
+    }
+
+    #[test]
+    fn close_range_first_after_last_is_einval() {
+        assert_eq!(close_range(5, 3, 0), Err(Errno::EINVAL));
     }
 
     #[test]
