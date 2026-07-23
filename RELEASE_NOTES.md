@@ -11,6 +11,24 @@ Stay up to date with the latest changes to rusty_libc.
 
 ---
 
+## Round 3, batch 3: uname, readv/writev, rusage, and a test-race fix — [PR #51](https://github.com/baileyrd/rusty_libc/pull/51)–[#54](https://github.com/baileyrd/rusty_libc/pull/54)
+
+**July 23, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/d6e4c83...946ad5c)**
+
+**Fixed**
+- `process::tests::set_pdeathsig_kills_child_when_parent_exits` (added in #49) was flaky — roughly 1 in 5 full-suite runs — because the intermediate process could exit before the grandchild's `prctl(PR_SET_PDEATHSIG)` call had actually run, so `pdeathsig` never armed and the grandchild just survived as an ordinary orphan. Fixed with a handshake pipe: the grandchild confirms `pdeathsig` is armed before the intermediate is allowed to exit. Found by stress-testing (10 consecutive full-suite runs) before starting the next PR in this round, not by CI catching it. ([PR #51](https://github.com/baileyrd/rusty_libc/pull/51))
+
+**Added**
+- `process::uname`/`Utsname` — system identification (kernel name, hostname, release, version, machine, domain), the primitive behind `$OSTYPE`/`$MACHTYPE`-style shell variables. ([#31](https://github.com/baileyrd/rusty_libc/issues/31), [PR #52](https://github.com/baileyrd/rusty_libc/pull/52))
+- `fd::readv`/`writev` + `IoSlice`/`IoSliceMut` — scatter-gather I/O; `fd` had `read`/`write`/`pread`/`pwrite` but no vectored form. ([#32](https://github.com/baileyrd/rusty_libc/issues/32), [PR #53](https://github.com/baileyrd/rusty_libc/pull/53))
+- `wait::Rusage`/`Timeval` + `waitpid_rusage`/`waitid_rusage` — `waitpid`/`waitid` discarded the kernel's resource-usage output by passing null; a `time` builtin needs exactly this. Added as siblings so existing `waitpid`/`waitid` callers are unaffected. ([#22](https://github.com/baileyrd/rusty_libc/issues/22), [PR #54](https://github.com/baileyrd/rusty_libc/pull/54))
+
+**Notes from this batch worth keeping in mind**
+- `waitid`'s rusage out-parameter reads back all-zero under the aarch64 qemu-user CI job even when the sibling `wait4`-based path (identical CPU-burning test child) reports real data on both arches — a gap in qemu-user's syscall translation for `waitid` specifically, not a crate bug or a real aarch64 kernel limitation. The content assertion in `waitid_rusage`'s test is x86_64-only for this reason (same reasoning already applied to `vdso_resolves_on_native_x86_64`).
+- Clippy is genuinely per-target when code is `cfg`-gated by arch: PR #54 shipped a local-clean commit that CI caught as an aarch64-only "unused variable" (a variable read only inside an `x86_64`-gated assertion). Fixed immediately, and `cargo clippy --target aarch64-unknown-linux-gnu --all-targets -- -D warnings` is now run explicitly alongside the default-target check for every change in this round, not just when `cfg`-gating is visibly in play.
+
+---
+
 ## Round 3, batch 1: an aarch64 correctness fix, and five REVIEW.md items — [PR #39](https://github.com/baileyrd/rusty_libc/pull/39)–[#43](https://github.com/baileyrd/rusty_libc/pull/43)
 
 **July 22, 2026 • [Compare changes](https://github.com/baileyrd/rusty_libc/compare/dfa4e8c...f566d12)**
