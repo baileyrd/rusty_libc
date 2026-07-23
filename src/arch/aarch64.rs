@@ -133,6 +133,7 @@ pub mod nr {
     pub const SYSINFO: usize = 179;
     pub const PROCESS_VM_READV: usize = 270;
     pub const PROCESS_VM_WRITEV: usize = 271;
+    pub const PTRACE: usize = 117;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.

@@ -130,6 +130,7 @@ pub mod nr {
     pub const SYSINFO: usize = 99;
     pub const PROCESS_VM_READV: usize = 310;
     pub const PROCESS_VM_WRITEV: usize = 311;
+    pub const PTRACE: usize = 101;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.
