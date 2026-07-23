@@ -220,10 +220,13 @@ above.
 
 # Round 3 — capabilities assessment
 
-> **Status:** open. This round is a fresh line-by-line review of every module
+> **Status:** done. This round is a fresh line-by-line review of every module
 > against a job-control shell's actual needs, done after Round 2 and the
-> Track P work (`getdents64`, `pidfd_open`) landed. None of items 27–39 are
-> implemented on this branch; they are proposed additions, not a changelog.
+> Track P work (`getdents64`, `pidfd_open`) landed. All of items 27–39 are
+> implemented (see PRs #39–#58, #61), plus §L's `signalfd` design question
+> was decided (ADR-0002) and shipped (#61). This status line was itself
+> found stale during the Round 4 assessment below — every item had already
+> landed in code but the header still said "open."
 
 The crate's core (syscall stubs, `Errno`, kernel-layout structs, exec/fork/
 signals/job-control/filesystem) is complete and correct for what it already
@@ -346,16 +349,180 @@ decision, not proposing to silently add.
 
 ## Nits
 
-- `Errno`'s named-constant set (23 consts) is narrower than what `name()`
-  recognizes (~38 codes). The gap matters where it's most likely to bite: a
+> **Status:** both done. `Errno` now has 40 named constants (`arch/mod.rs`),
+> matching `name()`'s 40-code table exactly — `ERANGE`, `ENOSPC`, `EROFS`,
+> `ENAMETOOLONG`, `ENOTEMPTY`, `ELOOP`, `ESPIPE` and the rest all have consts,
+> and the `getcwd` test's old `Err(Errno(34))` magic number is gone
+> (`Err(Errno::ERANGE)`). `CStrArray` (`std`-feature-gated) shipped as the
+> `argv`/`envp` builder described below.
+
+- ~~`Errno`'s named-constant set (23 consts) is narrower than what `name()`
+  recognizes (~38 codes)~~. The gap matters where it's most likely to bite: a
   filesystem-heavy consumer will want to match on `ENOSPC`, `EROFS`,
   `ENAMETOOLONG`, `ENOTEMPTY`, and `ELOOP` by name, and none of the five has a
   const today. Concretely: `process`'s own `getcwd` test already hardcodes
   `Err(Errno(34)) // ERANGE` — a magic number of exactly the kind Round 1
   item 6 eliminated everywhere else, because `ERANGE` has no named const.
-- `execve`/`execveat` have no ergonomic way to build `argv`/`envp` from owned
-  strings; every caller hand-rolls null-terminated pointer arrays. The no_std/
+- ~~`execve`/`execveat` have no ergonomic way to build `argv`/`envp` from owned
+  strings~~; every caller hand-rolls null-terminated pointer arrays. The no_std/
   no-alloc core is a deliberate constraint, so this isn't a core-crate fix,
   but the opt-in `std` feature (already the home of `Errno`'s `io::Error`
   interop) is the natural place for a small `ArgvBuilder`/`EnvBuilder`
   convenience — nothing forces it into the no_std path.
+
+# Round 4 — capabilities assessment
+
+> **Status:** open. A fresh review done after Round 3 and the `signalfd`
+> decision (ADR-0002) both landed. Cross-checked two ways: a full inventory of
+> every `pub` symbol against Round 1–3's own history (nothing left
+> unimplemented from those rounds — Round 3's own status line was stale and
+> has been corrected above), and a read of `rush`'s actual code (`sys.rs`,
+> `job.rs`, `trap.rs`, `vars.rs`) to confirm it currently has **no live
+> blocking gap** — everything it calls today is already covered. The items
+> below are therefore forward-looking: real, well-scoped POSIX/Linux
+> primitives a shell plausibly wants next, not fixes for something broken
+> today. Ordered roughly by how directly each follows from work already
+> shipped.
+
+## M. Completing the pidfd ("Track P") story
+
+40. **`pidfd_send_signal(2)`.** Track P has steadily closed pid-reuse races
+    across a process's whole lifecycle: `pidfd_open` gives a stable handle
+    immune to reuse, `fork_with_pidfd` (`clone3`/`CLONE_PIDFD`) closes the
+    creation-time race, `waitid(P_PIDFD, ...)` closes the reap-time race. The
+    one place still using a raw, reuse-vulnerable pid is `kill`/`killpg`
+    themselves — `pidfd_send_signal` is the missing fourth piece: signal a
+    process via its pidfd, so a job-control shell holding a pidfd for a
+    background job never risks signaling a different process that reused its
+    pid between "I looked up this job's pid" and "I sent it a signal."
+
+## N. Process credentials and privilege
+
+41. **`setuid`/`setgid`/`seteuid`/`setegid`/`setresuid`/`setresgid` +
+    `setgroups`.** `process` has a complete set of credential *getters*
+    (`getuid`/`geteuid`/`getgid`/`getegid`/`getgroups`) and zero *setters*.
+    Any privilege-dropping behavior (a shell started setuid/setgid that wants
+    to drop back to the real ids before running user commands, or a future
+    `su`/`sudo`-adjacent builtin) currently has no primitive to call. Worth
+    doing as one cohesive batch since the six `set*id` syscalls share a
+    single design question (permission model, ordering of real/effective/
+    saved ids) that's easier to get right answered once than piecemeal.
+
+## O. `vfork_exec`'s redirection gap
+
+42. **A `vfork_exec` variant (or sibling) that supports fd redirection
+    before `exec`.** As shipped, `arch::vfork_execve`'s whole safety argument
+    rests on the child executing *zero* instructions of compiler-generated
+    code — it can only call `execve` directly, with no way to `dup2` stdin/
+    stdout/stderr, close inherited fds, or `chdir` first. That's exactly the
+    setup almost every real shell command needs (`cmd > file`, `cmd 2>&1`,
+    `cmd < file`), so `vfork_exec` in its current form is usable only for the
+    no-redirection case — real command dispatch still needs `fork` +
+    manual `dup2`/`close`/`execve` in the child, which is back to the
+    COW-heap-lock hazard `vfork_exec` exists to avoid. Closing this gap means
+    extending the *same* hand-written asm trampoline to also perform a small,
+    fixed-shape list of `dup2`/`close` operations (passed as a plain array of
+    `(old, new)` pairs, no allocation, no Rust closures) before the final
+    `execve` — more asm to get right, but staying within the pattern that's
+    already proven correct. Without this, `vfork_exec` is a demonstration of
+    the technique more than a tool a shell can actually dispatch commands
+    through.
+
+## P. Signal payload delivery
+
+43. **`sigqueue`/`rt_sigqueueinfo`.** `SignalfdSiginfo` already decodes a
+    queued signal's payload (`ssi_int`, `ssi_ptr`) but this crate has no way
+    to *originate* one — `kill`/`killpg` can only send a bare signal number.
+    `sigqueue` is the other half: attach an integer or pointer-sized value to
+    a signal sent to a specific pid. Minor by itself, but it's the kind of
+    small, obviously-complementary gap that's easy to miss precisely because
+    the receiving side already looks complete.
+
+## Q. Time completeness
+
+44. **`clock_nanosleep`.** `nanosleep` sleeps relative to an unspecified,
+    roughly-monotonic clock with no way to name it or sleep to an absolute
+    deadline. `clock_nanosleep` takes an explicit `clockid` and a
+    `TIMER_ABSTIME` mode, which is what a drift-free periodic sleep (the
+    same rationale that pushed `timerfd_create` over `alarm`/`SIGALRM` in
+    Round 3 item 37) actually needs: sleep to "now + N, then next tick at
+    exactly +2N" without each iteration's own overhead accumulating error.
+45. **`getrusage(RUSAGE_SELF` / `RUSAGE_CHILDREN)`.** `wait` exposes
+    `Rusage` but only for an already-waited-on *child* (`waitpid_rusage`/
+    `waitid_rusage`). There's no way to ask for the calling process's *own*
+    accumulated usage, which a `time` builtin needs when timing the shell's
+    own work (e.g. a pipeline with shell-internal stages) rather than only
+    an external command's child process. Small addition: same syscall
+    family (`getrusage(2)`), same already-defined `Rusage` struct, just a
+    different `who` argument and no child pid involved.
+
+## R. PTY allocation
+
+46. **An `openpty`-shaped primitive** (`open("/dev/ptmx", ...)` +
+    `ioctl(TIOCSPTLCK)` to unlock + `ioctl(TIOCGPTN)` to get the slave
+    number, composing into `/dev/pts/N`). `termios`'s own test suite already
+    hand-rolls exactly this sequence to get a real pty pair for its
+    `tcsetattr`/`tcflush`/`tcsetpgrp` tests — the hard, kernel-quirk-prone
+    part is done and de-risked, it's just sitting in test code instead of
+    the public API. Promoting it unlocks running a subprocess under a pty
+    (capture that expects a tty, defeating a program's `isatty()` check,
+    `script`-style session recording) — none of which is possible today
+    without a consumer re-deriving the same ioctl sequence from scratch.
+
+## S. Randomness
+
+47. **`getrandom(2)`.** No source of kernel randomness exists in this crate
+    at all. Doesn't block `$RANDOM` (`rush` seeds its own PRNG from wall-clock
+    + pid, matching bash's own non-cryptographic `$RANDOM`), but it's the
+    right primitive for anything wanting actually-unique names — temp files/
+    directories for heredocs or process substitution, where a predictable
+    name is a symlink-race and collision hazard `mktemp`-style tools exist
+    specifically to avoid. One syscall, no flags-handling complexity worth
+    mentioning (`GRND_NONBLOCK`/`GRND_RANDOM` aside).
+
+## T. Memory mapping — an entirely absent category
+
+48. **`mmap`/`munmap`/`mprotect` (the basic trio).** Not driven by a known
+    consumer need today — `rush` doesn't call `mmap` anywhere, and this is
+    flagged for that reason as lower priority than M–S above — but it's
+    worth naming explicitly: this is a complete, zero-coverage POSIX
+    category. A large-file `read` builtin, a memory-mapped history file, or
+    `rusty_lines` (the line editor, which also depends on this crate on
+    Linux) wanting to map a large buffer instead of read-looping are all
+    plausible future callers with no primitive to reach for today.
+
+## Design question: `/dev/tcp`/`/dev/udp` redirection — sockets, not a gap
+
+Not a missing primitive so much as a scope decision, in the same spirit as
+Round 3 §L: bash and several bash-compatible shells support
+`exec 3<>/dev/tcp/host/port`-style redirection, which needs a real sockets
+API (`socket`, `connect`, at minimum synchronous DNS resolution) — a
+meaningfully larger surface than anything else in this crate, with its own
+design questions (blocking vs. non-blocking connect, IPv4/IPv6, error
+mapping from `getaddrinfo`-shaped failures onto `Errno`). This crate
+currently has zero networking surface and Round 4's review found no evidence
+`rush` implements `/dev/tcp` today. Flagging so the decision — add a minimal
+sockets primitive if and when `/dev/tcp` support is wanted, versus treating
+networking as permanently out of scope for a crate whose stated purpose is
+job control — is made deliberately rather than by omission.
+
+## Considered and not proposed
+
+A few candidates came up during this round and were deliberately left out
+rather than silently added, each for a concrete reason:
+
+- **Advisory locking (`flock`/`fcntl(F_SETLK)`)** — no identified consumer
+  (`rush` doesn't lock its history file or anything else today); revisit if
+  concurrent-shell history-file safety becomes a real ask, not before.
+- **`chroot`/namespaces (`unshare`/`setns`)/seccomp/landlock** — plausible
+  for a future "restricted shell" or sandboxing mode, but each is its own
+  large, privileged, security-sensitive surface; bundling any of them in
+  speculatively would be scope creep this crate has consistently avoided.
+- **`sendfile`/`splice`/`copy_file_range`** — zero-copy transfer primitives;
+  real perf wins are plausible for pipeline-heavy or large-redirect
+  workloads, but nothing today measures pipeline `|` throughput as a
+  bottleneck, so this stays a "revisit if profiling asks for it" item rather
+  than a proposed addition.
+- **Extended attributes (`getxattr`/`setxattr`)** and **filesystem-level
+  stats (`statfs`)** — no shell-builtin need identified (no `df` or xattr-
+  aware builtin in `rush` today).
