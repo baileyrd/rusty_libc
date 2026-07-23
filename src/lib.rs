@@ -30,6 +30,7 @@
 pub mod arch;
 pub mod fd;
 pub mod fs;
+pub mod mmap;
 pub mod process;
 pub mod rand;
 pub mod rlimit;

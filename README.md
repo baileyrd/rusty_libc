@@ -25,6 +25,7 @@ assertions), not glibc's.
 | `signal` | `signal`/`sigaction` (+ `SA_*`), `sigprocmask`/`sigpending`/`sigsuspend`, the x86_64 `SA_RESTORER` trampoline, `SIG*` constants, `signalfd` + `SignalfdSiginfo` (recommended for async signal handling — see [ADR-0002](docs/adr/0002-signalfd-as-primary-event-driven-signal-path.md)), `sigqueue` (send a signal with a payload) |
 | `wait` | `waitpid`/`waitpid_rusage` (via `wait4`), `waitid`/`waitid_rusage` (with `WNOWAIT` and a `Siginfo`), `getrusage` (`RUSAGE_SELF`/`RUSAGE_CHILDREN`), `Rusage`, and the `W*` status decoders |
 | `rand` | `getrandom` (`GRND_NONBLOCK`/`GRND_RANDOM`) |
+| `mmap` | `mmap`/`munmap`/`mprotect`; `PROT_*`/`MAP_*` constants |
 | `termios` | kernel `Termios`, `tcgetattr`/`tcsetattr`(`_with`), `make_raw`, `tcflush`/`tcdrain`, tty pgrp queries, `isatty`, full `c_cc`/flag constants |
 | `tty` | `Winsize` window-size query, `openpty` (pty pair allocation) |
 | `rlimit` | `prlimit`/`getrlimit`/`setrlimit`, `RLIMIT_*` |
