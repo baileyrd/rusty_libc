@@ -15,6 +15,9 @@ pub mod nr {
     pub const WRITE: usize = 1;
     pub const OPEN: usize = 2;
     pub const CLOSE: usize = 3;
+    pub const MMAP: usize = 9;
+    pub const MPROTECT: usize = 10;
+    pub const MUNMAP: usize = 11;
     pub const POLL: usize = 7;
     pub const LSEEK: usize = 8;
     pub const RT_SIGACTION: usize = 13;
