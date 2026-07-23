@@ -57,6 +57,7 @@ pub mod nr {
     pub const RT_SIGACTION: usize = 134;
     pub const RT_SIGPROCMASK: usize = 135;
     pub const RT_SIGPENDING: usize = 136;
+    pub const RT_SIGQUEUEINFO: usize = 138;
     pub const SIGNALFD4: usize = 74;
     pub const SETPGID: usize = 154;
     pub const GETPGID: usize = 155;

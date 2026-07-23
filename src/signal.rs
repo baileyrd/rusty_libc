@@ -20,7 +20,7 @@
 //! trampoline, so `SA_RESTORER` is neither set nor required there.
 
 use crate::arch::nr;
-use crate::arch::{from_ret, from_ret_i32, syscall2, syscall4, Errno};
+use crate::arch::{from_ret, from_ret_i32, syscall2, syscall3, syscall4, Errno};
 
 /// A signal handler: [`SIG_DFL`], [`SIG_IGN`], or a function pointer
 /// (`extern "C" fn(i32)` cast to `usize`). Modelled as `usize` to match
@@ -412,6 +412,79 @@ pub fn signalfd(fd: i32, mask: u64, flags: i32) -> Result<i32, Errno> {
     from_ret_i32(ret)
 }
 
+// --- sigqueue(3) / rt_sigqueueinfo(2) -----------------------------------
+
+/// `si_code` value marking a signal as application-queued via `sigqueue`
+/// (as opposed to kernel-generated, e.g. `SI_KERNEL`, or plain `kill`,
+/// `SI_USER`). The kernel rejects `rt_sigqueueinfo` calls that claim any
+/// `si_code >= 0` from a normal (non-kernel) caller, so this is the only
+/// value [`sigqueue`] ever sends.
+const SI_QUEUE: i32 = -1;
+
+/// The subset of the kernel's `siginfo_t` that `rt_sigqueueinfo` reads:
+/// the three-int header every `siginfo_t` variant shares, followed by the
+/// `_rt` union member (`_pid`, `_uid`, `_sigval`) `SI_QUEUE`-flavored
+/// signals use. Fixed at 128 bytes to match the kernel's own `siginfo_t`
+/// size, the same convention [`crate::wait::Siginfo`] and
+/// [`SignalfdSiginfo`] follow for their own (differently-shaped) views
+/// into the same union.
+#[repr(C)]
+struct SigqueueInfo {
+    si_signo: i32,
+    si_errno: i32,
+    si_code: i32,
+    __pad0: i32,
+    si_pid: i32,
+    si_uid: u32,
+    /// `sigval_t`: the caller-chosen payload, delivered back verbatim as
+    /// [`SignalfdSiginfo::ssi_ptr`]/`ssi_int`'s low bits to a
+    /// [`signalfd`] reader, or as the handler's third argument for a
+    /// `SA_SIGINFO` [`sigaction`]. A plain integer fits in the low bits;
+    /// a pointer-sized value fills the whole field.
+    si_value: usize,
+    __pad: [u8; 96],
+}
+
+const _: () = assert!(core::mem::size_of::<SigqueueInfo>() == 128);
+const _: () = assert!(core::mem::offset_of!(SigqueueInfo, si_pid) == 16);
+const _: () = assert!(core::mem::offset_of!(SigqueueInfo, si_value) == 24);
+
+/// Send signal `sig` to process `pid`, attaching `value` as a payload a
+/// receiver decodes via [`signalfd`] (`SignalfdSiginfo::ssi_ptr`/`ssi_int`)
+/// or a `SA_SIGINFO` handler installed with [`sigaction`] — the other half
+/// of the payload delivery [`SignalfdSiginfo`] already exposes on the
+/// receiving side: this crate had no way to *originate* one. Ordinary
+/// [`kill`](crate::process::kill) can only send a bare signal number.
+///
+/// `value` is delivered as a raw `sigval_t` (an untyped `usize`): pass a
+/// plain integer, or a pointer the receiver understands the shape of (the
+/// two processes must agree on what it means out of band — the kernel
+/// only carries it, it doesn't interpret it).
+pub fn sigqueue(pid: i32, sig: i32, value: usize) -> Result<(), Errno> {
+    let info = SigqueueInfo {
+        si_signo: sig,
+        si_errno: 0,
+        si_code: SI_QUEUE,
+        __pad0: 0,
+        si_pid: crate::process::getpid(),
+        si_uid: crate::process::getuid(),
+        si_value: value,
+        __pad: [0; 96],
+    };
+    // rt_sigqueueinfo(pid, sig, &info).
+    // SAFETY: `info` is a valid, fully-initialized `siginfo_t`-shaped
+    // struct the kernel only reads.
+    let ret = unsafe {
+        syscall3(
+            nr::RT_SIGQUEUEINFO,
+            pid as usize,
+            sig as usize,
+            &info as *const SigqueueInfo as usize,
+        )
+    };
+    from_ret(ret).map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -613,5 +686,87 @@ mod tests {
 
         fd::close(sfd).expect("close signalfd");
         sigprocmask(SIG_SETMASK, old_mask).expect("restore mask");
+    }
+
+    #[test]
+    fn sigqueue_delivers_signal_and_payload_via_signalfd() {
+        use crate::fd;
+        use crate::process;
+        use crate::wait;
+
+        // rt_sigqueueinfo (like plain kill) is process-directed, not
+        // thread-directed, and cargo test runs each test on its own
+        // thread -- targeting the whole process from here risks the exact
+        // hazard `signalfd_reports_pending_signal_and_dequeues_it` above
+        // had to route around with `tgkill`: some sibling test's thread
+        // that hasn't blocked SIGPWR could catch it under its default
+        // (terminate) disposition. Isolating this in a fresh,
+        // single-threaded forked child sidesteps it entirely -- there,
+        // "the whole process" and "this one thread" are the same thing.
+        match unsafe { process::fork() }.expect("fork") {
+            0 => {
+                // The child exits right after this block regardless of
+                // outcome, so unlike the process-wide tests earlier in
+                // this file, there is nothing to restore the mask for.
+                if sigprocmask(SIG_BLOCK, sigmask(SIGPWR)).is_err() {
+                    process::exit_group(1);
+                }
+                let sfd = match signalfd(-1, sigmask(SIGPWR), 0) {
+                    Ok(fd) => fd,
+                    Err(_) => process::exit_group(2),
+                };
+
+                const PAYLOAD: usize = 0xdead_beef;
+                if sigqueue(process::getpid(), SIGPWR, PAYLOAD).is_err() {
+                    process::exit_group(3);
+                }
+
+                let mut fds = [fd::PollFd {
+                    fd: sfd,
+                    events: fd::POLLIN,
+                    revents: 0,
+                }];
+                if fd::poll(&mut fds, 1000) != Ok(1) {
+                    process::exit_group(4);
+                }
+
+                let mut info = SignalfdSiginfo::default();
+                // SAFETY: `info` is a valid, exclusively-borrowed, plain-
+                // data `SignalfdSiginfo` of exactly the size the kernel
+                // writes.
+                let buf = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        &mut info as *mut SignalfdSiginfo as *mut u8,
+                        core::mem::size_of::<SignalfdSiginfo>(),
+                    )
+                };
+                if fd::read(sfd, buf) != Ok(core::mem::size_of::<SignalfdSiginfo>()) {
+                    process::exit_group(5);
+                }
+                if info.ssi_signo != SIGPWR as u32 {
+                    process::exit_group(6);
+                }
+                if info.ssi_pid != process::getpid() as u32 {
+                    process::exit_group(7);
+                }
+                if info.ssi_ptr != PAYLOAD as u64 {
+                    process::exit_group(8);
+                }
+
+                process::exit_group(0);
+            }
+            pid => {
+                let (_, status) = wait::waitpid(pid, 0).expect("waitpid");
+                assert!(wait::wifexited(status), "child did not exit normally");
+                assert_eq!(wait::wexitstatus(status), 0, "child assertion failed");
+            }
+        }
+    }
+
+    #[test]
+    fn sigqueue_missing_pid_is_esrch() {
+        // No process has this pid: rt_sigqueueinfo reports ESRCH, matching
+        // `process::getpgid_missing_process_is_esrch`'s own sentinel pid.
+        assert_eq!(sigqueue(0x3fff_ffff, 0, 0), Err(Errno::ESRCH));
     }
 }
