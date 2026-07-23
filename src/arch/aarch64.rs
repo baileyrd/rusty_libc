@@ -117,6 +117,8 @@ pub mod nr {
     pub const FSYNC: usize = 82;
     pub const FDATASYNC: usize = 83;
     pub const CLOCK_GETRES: usize = 114;
+    pub const PREADV: usize = 69;
+    pub const PWRITEV: usize = 70;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `x0` result.

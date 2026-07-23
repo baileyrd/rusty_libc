@@ -114,6 +114,8 @@ pub mod nr {
     pub const FSYNC: usize = 74;
     pub const FDATASYNC: usize = 75;
     pub const CLOCK_GETRES: usize = 229;
+    pub const PREADV: usize = 295;
+    pub const PWRITEV: usize = 296;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.

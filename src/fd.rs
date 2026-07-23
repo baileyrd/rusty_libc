@@ -3,9 +3,9 @@
 //! and [`crate::tty`].
 
 use crate::arch::nr;
-#[cfg(target_arch = "aarch64")]
-use crate::arch::syscall5;
-use crate::arch::{from_ret, from_ret_i32, syscall1, syscall2, syscall3, syscall4, Errno};
+use crate::arch::{
+    from_ret, from_ret_i32, syscall1, syscall2, syscall3, syscall4, syscall5, Errno,
+};
 use core::ffi::CStr;
 
 /// `poll(2)` event/return flag: data available to read.
@@ -320,6 +320,52 @@ pub fn writev(fd: i32, bufs: &[IoSlice]) -> Result<usize, Errno> {
     // SAFETY: `bufs` is a valid slice of `struct iovec`-layout entries, each
     // borrowing a buffer the kernel only reads.
     let ret = unsafe { syscall3(nr::WRITEV, fd as usize, bufs.as_ptr() as usize, bufs.len()) };
+    from_ret(ret)
+}
+
+/// Scatter-read `bufs` from `fd` at `offset`, without moving (or being
+/// affected by) the fd's own current offset. Combines [`readv`] (vectored)
+/// with [`pread`] (positional): the vectored counterpart `pread`/`pwrite`
+/// don't have on their own.
+pub fn preadv(fd: i32, bufs: &mut [IoSliceMut], offset: i64) -> Result<usize, Errno> {
+    // preadv(fd, iov, iovcnt, pos_l, pos_h). The kernel syscall keeps a
+    // legacy 32-bit-compat split of the 64-bit offset into low/high halves
+    // even on 64-bit builds, but there it collapses to "pos_l alone holds
+    // the full offset, pos_h is unused" (see `pos_from_hilo` in the
+    // kernel's fs/read_write.c) -- so pos_h is always 0 here.
+    // SAFETY: `bufs` is a valid slice of `struct iovec`-layout entries, each
+    // exclusively borrowing the buffer it points at; the kernel writes at
+    // most `len` bytes into each in order.
+    let ret = unsafe {
+        syscall5(
+            nr::PREADV,
+            fd as usize,
+            bufs.as_ptr() as usize,
+            bufs.len(),
+            offset as usize,
+            0,
+        )
+    };
+    from_ret(ret)
+}
+
+/// Gather-write `bufs` to `fd` at `offset`, without moving (or being
+/// affected by) the fd's own current offset. Combines [`writev`] (vectored)
+/// with [`pwrite`] (positional); see [`preadv`] for the offset-argument
+/// convention.
+pub fn pwritev(fd: i32, bufs: &[IoSlice], offset: i64) -> Result<usize, Errno> {
+    // SAFETY: `bufs` is a valid slice of `struct iovec`-layout entries, each
+    // borrowing a buffer the kernel only reads.
+    let ret = unsafe {
+        syscall5(
+            nr::PWRITEV,
+            fd as usize,
+            bufs.as_ptr() as usize,
+            bufs.len(),
+            offset as usize,
+            0,
+        )
+    };
     from_ret(ret)
 }
 
@@ -876,6 +922,63 @@ mod tests {
         let buf = b"x";
         let bufs = [IoSlice::new(buf)];
         assert_eq!(writev(-1, &bufs), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn pwritev_gathers_at_offset_without_moving_the_fd_offset() {
+        let fd = memfd_create(c"rusty_libc_pwritev", MFD_CLOEXEC).expect("memfd_create");
+        write_all(fd, b"0123456789").expect("write_all"); // offset now at 10
+
+        let a = b"AB";
+        let b = b"CD";
+        let bufs = [IoSlice::new(a), IoSlice::new(b)];
+        let n = pwritev(fd, &bufs, 3).expect("pwritev");
+        assert_eq!(n, 4);
+
+        // The fd's own offset is untouched by pwritev -- still at 10, right
+        // after the write_all above.
+        assert_eq!(lseek(fd, 0, SEEK_CUR).expect("lseek cur"), 10);
+
+        let mut all = [0u8; 10];
+        assert_eq!(pread(fd, &mut all, 0).expect("pread"), 10);
+        assert_eq!(&all, b"012ABCD789");
+
+        close(fd).expect("close");
+    }
+
+    #[test]
+    fn preadv_scatters_from_offset_without_moving_the_fd_offset() {
+        let fd = memfd_create(c"rusty_libc_preadv", MFD_CLOEXEC).expect("memfd_create");
+        write_all(fd, b"hello scatter-gather").expect("write_all");
+        lseek(fd, 0, SEEK_SET).expect("lseek set");
+        // Move the offset somewhere unrelated to the read below, to prove
+        // preadv ignores it.
+        read(fd, &mut [0u8; 3]).expect("read");
+
+        let mut a = [0u8; 6];
+        let mut b = [0u8; 7];
+        let mut bufs = [IoSliceMut::new(&mut a), IoSliceMut::new(&mut b)];
+        let n = preadv(fd, &mut bufs, 6).expect("preadv");
+        assert_eq!(n, 13);
+        assert_eq!(&a, b"scatte");
+        assert_eq!(&b, b"r-gathe");
+
+        // The fd's own offset is still where the earlier read() left it (3),
+        // not moved by preadv.
+        assert_eq!(lseek(fd, 0, SEEK_CUR).expect("lseek cur"), 3);
+
+        close(fd).expect("close");
+    }
+
+    #[test]
+    fn preadv_pwritev_bad_fd_is_ebadf() {
+        let mut buf = [0u8; 1];
+        let mut rbufs = [IoSliceMut::new(&mut buf)];
+        assert_eq!(preadv(-1, &mut rbufs, 0), Err(Errno::EBADF));
+
+        let wbuf = b"x";
+        let wbufs = [IoSlice::new(wbuf)];
+        assert_eq!(pwritev(-1, &wbufs, 0), Err(Errno::EBADF));
     }
 
     #[test]
