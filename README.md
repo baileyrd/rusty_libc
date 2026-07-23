@@ -23,7 +23,7 @@ assertions), not glibc's.
 | `fs` | `statx`/`stat`/`lstat`/`fstat`, `faccessat`/`access`, `unlinkat`/`mkdirat`/`renameat2`/`symlinkat`/`readlinkat`/`linkat` (+ `unlink`/`mkdir`/`rename`/`link`/… shorthands), `fchmodat`/`chmod`, `fchownat`/`chown`/`lchown`, `utimensat`/`utimens` |
 | `process` | pids/uids/gids (real & effective), `ngroups`/`getgroups`, `getpriority`/`setpriority`/`nice`, `prctl`/`set_pdeathsig`/`get_pdeathsig`, `uname`, `setpgid`/`setsid`/`getpgid`/`getsid`/`getpgrp`, `kill`/`killpg`, `chdir`/`fchdir`/`getcwd`, `exit_group`, raw `fork`, `execve`/`execveat`, `CStrArray` (`std` feature) |
 | `signal` | `signal`/`sigaction` (+ `SA_*`), `sigprocmask`/`sigpending`/`sigsuspend`, the x86_64 `SA_RESTORER` trampoline, `SIG*` constants |
-| `wait` | `waitpid` (via `wait4`), `waitid` (with `WNOWAIT` and a `Siginfo`), and the `W*` status decoders |
+| `wait` | `waitpid`/`waitpid_rusage` (via `wait4`), `waitid`/`waitid_rusage` (with `WNOWAIT` and a `Siginfo`), `Rusage`, and the `W*` status decoders |
 | `termios` | kernel `Termios`, `tcgetattr`/`tcsetattr`(`_with`), `make_raw`, `tcflush`/`tcdrain`, tty pgrp queries, `isatty`, full `c_cc`/flag constants |
 | `tty` | `Winsize` window-size query |
 | `rlimit` | `prlimit`/`getrlimit`/`setrlimit`, `RLIMIT_*` |
