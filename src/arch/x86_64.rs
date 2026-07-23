@@ -36,6 +36,7 @@ pub mod nr {
     pub const KILL: usize = 62;
     pub const MEMFD_CREATE: usize = 319;
     pub const WAIT4: usize = 61;
+    pub const GETRUSAGE: usize = 98;
     pub const FCNTL: usize = 72;
     pub const GETCWD: usize = 79;
     pub const CHDIR: usize = 80;

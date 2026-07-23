@@ -4,7 +4,7 @@
 //! encoding; they take the raw `i32` status filled in by [`waitpid`].
 
 use crate::arch::nr;
-use crate::arch::{from_ret, from_ret_i32, syscall4, syscall5, Errno};
+use crate::arch::{from_ret, from_ret_i32, syscall2, syscall4, syscall5, Errno};
 
 /// `waitpid` option: return immediately if no child has changed state.
 pub const WNOHANG: i32 = 1;
@@ -91,6 +91,41 @@ const _: () = assert!(core::mem::size_of::<Rusage>() == 144);
 const _: () = assert!(core::mem::offset_of!(Rusage, stime) == 16);
 const _: () = assert!(core::mem::offset_of!(Rusage, maxrss) == 32);
 const _: () = assert!(core::mem::offset_of!(Rusage, nivcsw) == 136);
+
+/// [`getrusage`] `who`: the calling process (or, `waitpid_rusage`/
+/// `waitid_rusage`-style, thread group).
+pub const RUSAGE_SELF: i32 = 0;
+/// [`getrusage`] `who`: all children this process has already waited for
+/// and reaped, summed together (not the currently-running ones — this
+/// crate has no `RUSAGE_BOTH`/`RUSAGE_THREAD` support since the kernel
+/// gates them behind privileges/thread-specific semantics this crate's
+/// job-control-shell use case doesn't need).
+pub const RUSAGE_CHILDREN: i32 = -1;
+
+/// Get the resource usage (CPU time, page faults, context switches, …) of
+/// the calling process itself, per [`RUSAGE_SELF`]/[`RUSAGE_CHILDREN`].
+///
+/// [`waitpid_rusage`]/[`waitid_rusage`] expose this same data, but only
+/// for one specific already-reaped *child* — there was no way to ask for
+/// the calling process's *own* accumulated usage, which a `time` builtin
+/// needs when timing the shell's own work (e.g. a pipeline with
+/// shell-internal stages) rather than only an external command's child
+/// process.
+pub fn getrusage(who: i32) -> Result<Rusage, Errno> {
+    let mut rusage = Rusage::default();
+    // getrusage(who, &mut rusage).
+    // SAFETY: `rusage` is a valid, exclusively-borrowed out parameter the
+    // kernel writes completely on success.
+    let ret = unsafe {
+        syscall2(
+            nr::GETRUSAGE,
+            who as usize,
+            &mut rusage as *mut Rusage as usize,
+        )
+    };
+    from_ret(ret)?;
+    Ok(rusage)
+}
 
 /// Like [`waitpid`], but also returns the terminated child's resource usage
 /// (CPU time, page faults, context switches, …) -- the data a `time` builtin
@@ -365,6 +400,64 @@ mod tests {
     #[test]
     fn waitid_no_child_is_echild() {
         assert_eq!(waitid(P_ALL, 0, WEXITED | WNOHANG), Err(Errno::ECHILD));
+    }
+
+    #[test]
+    fn getrusage_self_reports_own_cpu_time() {
+        // Burn measurable CPU in this thread/process itself, then confirm
+        // RUSAGE_SELF reports it -- unlike waitpid_rusage/waitid_rusage,
+        // this needs no child at all.
+        let mut x: u64 = 0;
+        for i in 0..50_000_000u64 {
+            x = core::hint::black_box(x.wrapping_add(i));
+        }
+        core::hint::black_box(x);
+
+        let rusage = getrusage(RUSAGE_SELF).expect("getrusage");
+        assert!(
+            rusage.utime.tv_sec > 0 || rusage.utime.tv_usec > 0,
+            "expected non-zero self CPU time accounting, got {rusage:?}"
+        );
+    }
+
+    #[test]
+    fn getrusage_children_reports_reaped_child_cpu_time() {
+        use crate::process::{exit_group, fork};
+
+        // RUSAGE_CHILDREN accumulates process-wide across every reaped
+        // child, including ones from other tests in this same binary, so
+        // this only asserts it becomes (further) non-zero after reaping a
+        // CPU-burning child -- not that it started at zero, which would be
+        // order-dependent on whatever else this process has already
+        // reaped.
+        match unsafe { fork() }.expect("fork") {
+            0 => {
+                let mut x: u64 = 0;
+                for i in 0..50_000_000u64 {
+                    x = core::hint::black_box(x.wrapping_add(i));
+                }
+                exit_group(0);
+            }
+            pid => {
+                let (wpid, status) = waitpid(pid, 0).expect("waitpid");
+                assert_eq!(wpid, pid);
+                assert!(wifexited(status));
+
+                let rusage = getrusage(RUSAGE_CHILDREN).expect("getrusage");
+                assert!(
+                    rusage.utime.tv_sec > 0
+                        || rusage.utime.tv_usec > 0
+                        || rusage.stime.tv_sec > 0
+                        || rusage.stime.tv_usec > 0,
+                    "expected non-zero cumulative child CPU time, got {rusage:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn getrusage_bad_who_is_einval() {
+        assert_eq!(getrusage(9999), Err(Errno::EINVAL));
     }
 
     #[test]

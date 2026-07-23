@@ -86,6 +86,7 @@ pub mod nr {
     pub const RENAMEAT2: usize = 276;
     pub const MEMFD_CREATE: usize = 279;
     pub const WAIT4: usize = 260;
+    pub const GETRUSAGE: usize = 165;
     pub const PRLIMIT64: usize = 261;
     pub const STATX: usize = 291;
     pub const EXECVEAT: usize = 281;
