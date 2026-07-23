@@ -80,6 +80,7 @@ pub mod nr {
     pub const STATX: usize = 332;
     pub const GETDENTS64: usize = 217;
     pub const PIDFD_OPEN: usize = 434;
+    pub const CLONE3: usize = 435;
 }
 
 /// Issue syscall `n` with no arguments; returns the raw `rax` result.
