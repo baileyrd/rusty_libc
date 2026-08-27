@@ -1,5 +1,13 @@
 # rusty_libc
 
+> **This repo has moved.** `rusty_libc` now lives at
+> [`crates/rusty_libc`](https://github.com/Rusty-Mill/rusty_mill/tree/main/crates/rusty_libc)
+> in the [`rusty_mill`](https://github.com/Rusty-Mill/rusty_mill) monorepo,
+> merged in with its full commit history via `git subtree`. This repo is
+> kept for historical reference (issues, PRs, prior releases) but is no
+> longer where development happens -- open new issues and PRs against
+> `rusty_mill` instead.
+
 A `#![no_std]`, zero-dependency, Linux-only raw-syscall crate that replaces the
 `libc` FFI-bindings crate in [rush](https://github.com/baileyrd/rush). It issues
 syscalls via inline asm instead of linking prototypes against glibc, and models
